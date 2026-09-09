@@ -3,8 +3,8 @@
 import React, { use, useState, useEffect } from "react";
 import { AppLayout } from "@/components/layout/app-layout";
 import { MOCK_PATIENTS } from "@/data/mock-data";
-import { getAllPatientsFromFirestore, getPatientActionsFromFirestore } from "@/lib/firebase/patients";
-import { Patient, PatientActionRecord } from "@/types/dcnt";
+import { getAllPatientsFromFirestore, getPatientActionsFromFirestore, getPatientHistorySnapshotsFromFirestore } from "@/lib/firebase/patients";
+import { Patient, PatientActionRecord, PatientCargaSnapshot } from "@/types/dcnt";
 import { useAuth } from "@/context/auth-context";
 import { BadgePriority } from "@/components/ui/badge-priority";
 import { CardIndicator } from "@/components/ui/card-indicator";
@@ -13,6 +13,7 @@ import { useRouter } from "next/navigation";
 import { formatDateBR } from "@/lib/utils/formatters";
 import { compareActionsChronological } from "@/lib/utils/returns";
 import { PriorityExplanationCard } from "@/components/patients/priority-explanation-card";
+import { PatientEvolutionHistory } from "@/components/patients/patient-evolution-history";
 import {
   User,
   Phone,
@@ -39,6 +40,7 @@ export default function PacienteDetalhePage({
 
   const [patients, setPatients] = useState<Patient[]>(MOCK_PATIENTS);
   const [realActions, setRealActions] = useState<PatientActionRecord[]>([]);
+  const [realSnapshots, setRealSnapshots] = useState<PatientCargaSnapshot[]>([]);
 
   useEffect(() => {
     async function loadData() {
@@ -54,6 +56,8 @@ export default function PacienteDetalhePage({
       if (resolvedParams.id) {
         const actions = await getPatientActionsFromFirestore(resolvedParams.id);
         setRealActions(actions);
+        const snapshots = await getPatientHistorySnapshotsFromFirestore(resolvedParams.id);
+        setRealSnapshots(snapshots);
       }
     }
     loadData();
@@ -68,6 +72,16 @@ export default function PacienteDetalhePage({
   realActions.forEach((a) => { if (a.id) actionMap.set(a.id, a); });
 
   const allActions = Array.from(actionMap.values()).sort((a, b) => compareActionsChronological(b, a));
+
+  // Consolidar snapshots de carga (do documento do paciente ou da subcoleção /historicoCargas)
+  const snapshotsFromDoc = patient.historicoCargas || [];
+  const snapshotMap = new Map<string, PatientCargaSnapshot>();
+  snapshotsFromDoc.forEach((s) => { if (s.id) snapshotMap.set(s.id, s); });
+  realSnapshots.forEach((s) => { if (s.id) snapshotMap.set(s.id, s); });
+
+  const allSnapshots = Array.from(snapshotMap.values()).sort((a, b) =>
+    (b.dataCarga || "").localeCompare(a.dataCarga || "")
+  );
 
   // Procurar especificamente a Visita Domiciliar mais recente para o card "Última Visita ACS"
   const lastVisitaDomiciliar = allActions.find((act) => act.tipoAcao === "Visita Domiciliar");
@@ -105,7 +119,47 @@ export default function PacienteDetalhePage({
     );
   }
 
-  const paChartData = patient.paHistory.map((h) => ({
+  // Consolidar medições de PA para os gráficos (combinando paHistory do doc/mock e medições dos snapshots)
+  const paPointsMap = new Map<string, { date: string; systolic: number; diastolic: number }>();
+  (patient.paHistory || []).forEach((h) => {
+    paPointsMap.set(h.date, { date: h.date, systolic: h.systolic, diastolic: h.diastolic });
+  });
+  allSnapshots.forEach((s) => {
+    const d = s.dataPA || (s.dataCarga ? s.dataCarga.substring(0, 10) : "");
+    if (d && s.pressaoSistolica && s.pressaoDiastolica) {
+      paPointsMap.set(d, { date: d, systolic: s.pressaoSistolica, diastolic: s.pressaoDiastolica });
+    }
+  });
+  if (patient.lastPA?.date && patient.lastPA?.systolic && patient.lastPA?.diastolic) {
+    paPointsMap.set(patient.lastPA.date, {
+      date: patient.lastPA.date,
+      systolic: patient.lastPA.systolic,
+      diastolic: patient.lastPA.diastolic,
+    });
+  }
+  const consolidatedPAHistory = Array.from(paPointsMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+
+  // Consolidar medições de Peso e IMC para os gráficos
+  const weightPointsMap = new Map<string, { date: string; weight: number; imc: number }>();
+  (patient.weightHistory || []).forEach((w) => {
+    weightPointsMap.set(w.date, { date: w.date, weight: w.weight, imc: w.imc });
+  });
+  allSnapshots.forEach((s) => {
+    const d = s.dataAntropometria || (s.dataCarga ? s.dataCarga.substring(0, 10) : "");
+    if (d && s.peso) {
+      weightPointsMap.set(d, { date: d, weight: s.peso, imc: s.imc || 0 });
+    }
+  });
+  if (patient.lastWeight?.date && patient.lastWeight?.weight) {
+    weightPointsMap.set(patient.lastWeight.date, {
+      date: patient.lastWeight.date,
+      weight: patient.lastWeight.weight,
+      imc: patient.lastWeight.imc || 0,
+    });
+  }
+  const consolidatedWeightHistory = Array.from(weightPointsMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+
+  const paChartData = consolidatedPAHistory.map((h) => ({
     date: formatDateBR(h.date),
     value1: h.systolic,
     value2: h.diastolic,
@@ -113,13 +167,13 @@ export default function PacienteDetalhePage({
     label2: "PA Diastólica (mmHg)",
   }));
 
-  const weightChartData = patient.weightHistory.map((w) => ({
+  const weightChartData = consolidatedWeightHistory.map((w) => ({
     date: formatDateBR(w.date),
     value1: w.weight,
     label1: "Peso (kg)",
   }));
 
-  const imcChartData = patient.weightHistory.map((w) => ({
+  const imcChartData = consolidatedWeightHistory.map((w) => ({
     date: formatDateBR(w.date),
     value1: w.imc,
     label1: "IMC (kg/m²)",
@@ -261,6 +315,9 @@ export default function PacienteDetalhePage({
 
       {/* Seção de Motivos da Sinalização (Explicabilidade da Prioridade) */}
       <PriorityExplanationCard patient={patient} allActions={allActions} />
+
+      {/* Histórico e Evolução das Cargas de Dados e-SUS APS */}
+      <PatientEvolutionHistory patient={patient} snapshots={allSnapshots} />
 
       {/* Gráficos de Evolução Temporal */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">

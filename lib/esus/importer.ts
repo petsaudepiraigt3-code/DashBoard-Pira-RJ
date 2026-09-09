@@ -5,6 +5,7 @@ import { getExistingPatientsMap, FirestorePatientDoc } from "../firebase/patient
 import { createImportRecordInFirestore, updateImportRecordInFirestore } from "../firebase/imports";
 import { ensureUnitMicroareaInFirestore } from "../firebase/units";
 import { maskCPF, maskCNS } from "./normalizer";
+import { PatientCargaSnapshot, PriorityLevel } from "@/types/dcnt";
 
 export interface ESUSImportProgress {
   step: "Preparando..." | "Importando pacientes..." | "Gravando históricos..." | "Finalizando..." | "Concluído";
@@ -46,6 +47,149 @@ function maskName(name: string): string {
   return parts
     .map((p) => (p.length > 2 ? `${p[0]}***` : p))
     .join(" ");
+}
+ 
+// Função para calcular deltas e evolução clínica em relação à carga imediatamente anterior
+export function calculateSnapshotComparison(
+  norm: NormalizedPatientRecord,
+  previousData?: {
+    pressaoSistolicaAtual?: number | null;
+    pressaoDiastolicaAtual?: number | null;
+    pesoAtual?: number | null;
+    imcAtual?: number | null;
+    dataUltimaVisitaACS?: string | null;
+    dataUltimaVisita?: string | null;
+    prioridade?: PriorityLevel;
+  } | null
+) {
+  if (!previousData) {
+    return {
+      statusPA: "Novo Registro" as const,
+      statusPeso: "Sem Dado Anterior" as const,
+      statusVisita: "Sem Registro" as const,
+    };
+  }
+
+  // PA
+  let statusPA: "Melhorou" | "Piorou" | "Estável" | "Sem Dado Anterior" | "Novo Registro" = "Estável";
+  let deltaSistolica: number | undefined;
+  let deltaDiastolica: number | undefined;
+
+  if (norm.systolic && norm.diastolic && previousData.pressaoSistolicaAtual && previousData.pressaoDiastolicaAtual) {
+    deltaSistolica = norm.systolic - previousData.pressaoSistolicaAtual;
+    deltaDiastolica = norm.diastolic - previousData.pressaoDiastolicaAtual;
+
+    const prevWasElevated = previousData.pressaoSistolicaAtual >= 140 || previousData.pressaoDiastolicaAtual >= 90;
+    const currentIsElevated = norm.systolic >= 140 || norm.diastolic >= 90;
+
+    if (prevWasElevated && !currentIsElevated) {
+      statusPA = "Melhorou";
+    } else if (!prevWasElevated && currentIsElevated) {
+      statusPA = "Piorou";
+    } else if (deltaSistolica <= -5 || deltaDiastolica <= -5) {
+      statusPA = "Melhorou";
+    } else if (deltaSistolica >= 5 || deltaDiastolica >= 5) {
+      statusPA = "Piorou";
+    } else {
+      statusPA = "Estável";
+    }
+  } else if (norm.systolic && norm.diastolic) {
+    statusPA = "Novo Registro";
+  } else {
+    statusPA = "Sem Dado Anterior";
+  }
+
+  // Peso e IMC
+  let statusPeso: "Reduziu" | "Aumentou" | "Estável" | "Sem Dado Anterior" = "Estável";
+  let deltaPeso: number | undefined;
+  let deltaIMC: number | undefined;
+
+  if (norm.peso && previousData.pesoAtual) {
+    deltaPeso = Number((norm.peso - previousData.pesoAtual).toFixed(2));
+    if (deltaPeso <= -0.5) statusPeso = "Reduziu";
+    else if (deltaPeso >= 0.5) statusPeso = "Aumentou";
+    else statusPeso = "Estável";
+  } else {
+    statusPeso = "Sem Dado Anterior";
+  }
+
+  if (norm.imc && previousData.imcAtual) {
+    deltaIMC = Number((norm.imc - previousData.imcAtual).toFixed(2));
+  }
+
+  // Visita
+  let statusVisita: "Atualizada" | "Inalterada" | "Sem Registro" = "Inalterada";
+  const prevVisita = previousData.dataUltimaVisitaACS || previousData.dataUltimaVisita;
+  if (norm.lastHomeVisit) {
+    if (!prevVisita || norm.lastHomeVisit > prevVisita) {
+      statusVisita = "Atualizada";
+    } else {
+      statusVisita = "Inalterada";
+    }
+  } else {
+    statusVisita = prevVisita ? "Inalterada" : "Sem Registro";
+  }
+
+  // Mudança de prioridade
+  const mudancaPrioridade = previousData.prioridade
+    ? {
+        anterior: previousData.prioridade,
+        atual: norm.priority as PriorityLevel,
+      }
+    : undefined;
+
+  return {
+    statusPA,
+    deltaSistolica,
+    deltaDiastolica,
+    statusPeso,
+    deltaPeso,
+    deltaIMC,
+    statusVisita,
+    mudancaPrioridade,
+  };
+}
+
+export function createSnapshotRecord(
+  importId: string,
+  fileName: string,
+  tipoImportacao: "COMPLETA" | "TESTE",
+  userName: string,
+  norm: NormalizedPatientRecord,
+  previousData?: any
+): PatientCargaSnapshot {
+  const comparativo = calculateSnapshotComparison(norm, previousData);
+  const now = new Date().toISOString();
+  const dateKey = norm.dataPA || norm.dataMedicao || norm.lastHomeVisit || now.substring(0, 10);
+  const snapId = `snap_${importId}_${dateKey}_${Math.random().toString(36).substring(2, 7)}`;
+
+  return {
+    id: snapId,
+    importId,
+    fileName,
+    dataCarga: now,
+    dataReferencia: dateKey,
+    tipoImportacao,
+    usuarioUpload: userName,
+    pressaoSistolica: norm.systolic || null,
+    pressaoDiastolica: norm.diastolic || null,
+    dataPA: norm.dataPA || null,
+    peso: norm.peso || null,
+    altura: norm.altura || null,
+    imc: norm.imc || null,
+    dataAntropometria: norm.dataMedicao || null,
+    dataUltimaVisitaACS: norm.lastHomeVisit || null,
+    diasSemVisitaACS: norm.daysSinceHomeVisit ?? null,
+    mesesSemVisitaACS: norm.monthsSinceHomeVisit ?? null,
+    dataUltimoAtendimentoMedico: norm.lastMedicalCare || null,
+    dataUltimoAtendimentoEnfermagem: norm.lastNursingCare || null,
+    dataUltimoAtendimentoOdontologico: norm.lastDentalCare || null,
+    prioridade: norm.priority,
+    motivosPrioridade: norm.activeSearchReason || null,
+    microarea: norm.microarea || null,
+    acsName: norm.acsName || null,
+    comparativo,
+  };
 }
 
 // 1. Execução Controlada do Teste de 5 Pacientes com Métricas Exatas no Firestore
@@ -102,6 +246,11 @@ export async function executeFivePatientsTestImportToFirestore(
       norm.microarea || "Não informada"
     );
 
+    const prevPatientData = patientSnap.exists() ? (patientSnap.data() as any) : null;
+    const snapshot = createSnapshotRecord("teste-5-pacientes", fileName, "TESTE", userName, norm, prevPatientData);
+    const existingCargas = prevPatientData?.historicoCargas || [];
+    const updatedHistoricoCargas = [snapshot, ...existingCargas].slice(0, 20);
+
     const patientData = {
       nome: norm.nome,
       cpf: norm.cpf || null,
@@ -137,11 +286,16 @@ export async function executeFivePatientsTestImportToFirestore(
 
       identificacaoConfiavel: isReliable,
       requerRevisao: !isReliable,
+      historicoCargas: updatedHistoricoCargas,
       updatedAt: serverTimestamp(),
       ultimaImportacaoId: "teste-5-pacientes",
     };
 
     await setDoc(patientRef, { ...patientData, createdAt: serverTimestamp() }, { merge: true });
+
+    // Gravar snapshot na subcoleção historicoCargas para auditoria e histórico permanente
+    const snapRef = doc(collection(db, "pacientes", patientDocId, "historicoCargas"), snapshot.id);
+    await setDoc(snapRef, snapshot, { merge: true });
 
     // Vínculo paciente-unidade
     const vinculoRef = doc(db, "pacientes", patientDocId, "vinculosUnidade", unidadeId);
@@ -377,6 +531,10 @@ export async function executeESUSImportToFirestore(
 
     const patientRef = doc(db, "pacientes", patientDocId);
 
+    const snapshot = createSnapshotRecord(importId, fileName, "COMPLETA", userName, norm, existingPatient);
+    const existingCargas = (existingPatient as any)?.historicoCargas || [];
+    const updatedHistoricoCargas = [snapshot, ...existingCargas].slice(0, 20);
+
     const patientData = {
       nome: norm.nome,
       cpf: norm.cpf || null,
@@ -412,6 +570,7 @@ export async function executeESUSImportToFirestore(
 
       identificacaoConfiavel: isReliable,
       requerRevisao: needsReview,
+      historicoCargas: updatedHistoricoCargas,
       updatedAt: serverTimestamp(),
       ultimaImportacaoId: importId,
     };
@@ -432,6 +591,11 @@ export async function executeESUSImportToFirestore(
       if (norm.cpf) existingMap.set(norm.cpf, { ...patientData, id: patientDocId } as any);
       if (norm.cns) existingMap.set(norm.cns, { ...patientData, id: patientDocId } as any);
     }
+
+    // Gravar snapshot na subcoleção historicoCargas para rastreamento longitudinal completo
+    const snapRef = doc(collection(db, "pacientes", patientDocId, "historicoCargas"), snapshot.id);
+    currentBatch.set(snapRef, snapshot, { merge: true });
+    batchOpCount++;
 
     // Vínculo paciente-unidade
     const vinculoRef = doc(db, "pacientes", patientDocId, "vinculosUnidade", unidadeId);

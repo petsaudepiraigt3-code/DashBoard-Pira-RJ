@@ -1,6 +1,6 @@
 import { collection, getDocs, doc, getDoc, setDoc, updateDoc } from "firebase/firestore";
 import { db } from "../firebase";
-import { Patient, PatientActionRecord, PatientActionType, PriorityLevel } from "@/types/dcnt";
+import { Patient, PatientActionRecord, PatientActionType, PriorityLevel, PatientCargaSnapshot, PAMeasurement, WeightMeasurement } from "@/types/dcnt";
 import { NormalizedPatientRecord } from "../esus/types";
 import { MOCK_UNIT_NAME } from "@/data/mock-data";
 import { compareActionsChronological } from "@/lib/utils/returns";
@@ -39,6 +39,7 @@ export interface FirestorePatientDoc {
   requerRevisao: boolean;
 
   historicoAcoes?: PatientActionRecord[];
+  historicoCargas?: PatientCargaSnapshot[];
   createdAt?: any;
   updatedAt?: any;
   ultimaImportacaoId: string;
@@ -202,6 +203,61 @@ export async function getAllPatientsFromFirestore(options?: FetchPatientsOptions
       const lastVisitDate = computeConsolidatedLastVisitDate(data);
       const lastMedicalApptDate = data.dataUltimaConsulta || undefined;
 
+      const historicoCargas = (data as any).historicoCargas || [];
+      const extractedPAHistory: PAMeasurement[] = [];
+      const extractedWeightHistory: WeightMeasurement[] = [];
+
+      historicoCargas.forEach((c: PatientCargaSnapshot) => {
+        if (c.pressaoSistolica && c.pressaoDiastolica) {
+          extractedPAHistory.push({
+            id: `pa-${c.id}`,
+            date: c.dataPA || (c.dataCarga ? c.dataCarga.substring(0, 10) : ""),
+            systolic: c.pressaoSistolica,
+            diastolic: c.pressaoDiastolica,
+            location: "e-SUS APS",
+          });
+        }
+        if (c.peso && c.altura) {
+          extractedWeightHistory.push({
+            id: `w-${c.id}`,
+            date: c.dataAntropometria || (c.dataCarga ? c.dataCarga.substring(0, 10) : ""),
+            weight: c.peso,
+            height: c.altura,
+            imc: c.imc || Number((c.peso / (c.altura * c.altura)).toFixed(2)),
+          });
+        }
+      });
+
+      // Se a última medição atual não estiver em historicoCargas, adicionar
+      if (data.pressaoSistolicaAtual && data.pressaoDiastolicaAtual) {
+        const currentDate = data.dataUltimaPA || new Date().toISOString().substring(0, 10);
+        if (!extractedPAHistory.some((h) => h.date === currentDate)) {
+          extractedPAHistory.push({
+            id: `pa-current-${docSnap.id}`,
+            date: currentDate,
+            systolic: data.pressaoSistolicaAtual,
+            diastolic: data.pressaoDiastolicaAtual,
+            location: "e-SUS APS",
+          });
+        }
+      }
+
+      if (data.pesoAtual && data.alturaAtual) {
+        const currentDate = new Date().toISOString().substring(0, 10);
+        if (!extractedWeightHistory.some((h) => h.date === currentDate)) {
+          extractedWeightHistory.push({
+            id: `w-current-${docSnap.id}`,
+            date: currentDate,
+            weight: data.pesoAtual,
+            height: data.alturaAtual,
+            imc: data.imcAtual || Number((data.pesoAtual / (data.alturaAtual * data.alturaAtual)).toFixed(2)),
+          });
+        }
+      }
+
+      extractedPAHistory.sort((a, b) => a.date.localeCompare(b.date));
+      extractedWeightHistory.sort((a, b) => a.date.localeCompare(b.date));
+
       list.push({
         id: docSnap.id,
         name: data.nome,
@@ -241,10 +297,11 @@ export async function getAllPatientsFromFirestore(options?: FetchPatientsOptions
         priority: data.prioridade,
         activeSearchReason: data.motivosPrioridade || undefined,
         activeSearchStatus: data.prioridade === "Alta" ? "Pendente" : "Acompanhado",
-        paHistory: [],
-        weightHistory: [],
+        paHistory: extractedPAHistory,
+        weightHistory: extractedWeightHistory,
         timeline: computedTimeline,
         historicoAcoes: rawHistorico,
+        historicoCargas: historicoCargas,
       });
     });
   } catch (err) {
@@ -348,4 +405,39 @@ export async function getPatientActionsFromFirestore(patientId: string): Promise
   const actions = Array.from(actionMap.values());
   // Ordenar do mais recente para o mais antigo por dataAcao DESC e createdAt DESC
   return actions.sort((a, b) => compareActionsChronological(b, a));
+}
+
+// 5. Buscar Snapshots de Carga de um paciente específico no Firestore
+export async function getPatientHistorySnapshotsFromFirestore(patientId: string): Promise<PatientCargaSnapshot[]> {
+  if (!patientId) return [];
+  const snapshotMap = new Map<string, PatientCargaSnapshot>();
+
+  try {
+    // 1. Ler o array no documento principal do paciente
+    const patientRef = doc(db, "pacientes", patientId);
+    const patientSnap = await getDoc(patientRef);
+    if (patientSnap.exists()) {
+      const data = patientSnap.data() as FirestorePatientDoc;
+      const rawCargas: PatientCargaSnapshot[] = data.historicoCargas || [];
+      rawCargas.forEach((c) => {
+        if (c.id) snapshotMap.set(c.id, c);
+      });
+    }
+
+    // 2. Ler documentos na subcoleção pacientes/{patientId}/historicoCargas
+    const cargasRef = collection(db, "pacientes", patientId, "historicoCargas");
+    const cargasSnap = await getDocs(cargasRef);
+    cargasSnap.forEach((dSnap) => {
+      const c = dSnap.data() as PatientCargaSnapshot;
+      if (c && (c.id || dSnap.id)) {
+        snapshotMap.set(c.id || dSnap.id, { ...c, id: c.id || dSnap.id });
+      }
+    });
+  } catch (err) {
+    console.error("Erro ao buscar histórico de cargas do paciente no Firestore:", err);
+  }
+
+  const list = Array.from(snapshotMap.values());
+  // Ordenar do mais recente para o mais antigo por dataCarga DESC
+  return list.sort((a, b) => (b.dataCarga || "").localeCompare(a.dataCarga || ""));
 }

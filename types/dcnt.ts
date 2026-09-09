@@ -36,6 +36,55 @@ export interface PatientTimelineEvent {
   professional: string;
 }
 
+export interface PatientCargaSnapshot {
+  id: string;
+  importId: string;
+  fileName: string;
+  dataCarga: string; // ISO string do momento da importação
+  dataReferencia?: string;
+  tipoImportacao?: "COMPLETA" | "TESTE" | "MANUAL";
+  usuarioUpload?: string;
+
+  // Dados clínicos e territoriais capturados na carga
+  pressaoSistolica?: number | null;
+  pressaoDiastolica?: number | null;
+  dataPA?: string | null;
+
+  peso?: number | null;
+  altura?: number | null;
+  imc?: number | null;
+  dataAntropometria?: string | null;
+
+  dataUltimaVisitaACS?: string | null;
+  diasSemVisitaACS?: number | null;
+  mesesSemVisitaACS?: number | null;
+
+  dataUltimoAtendimentoMedico?: string | null;
+  dataUltimoAtendimentoEnfermagem?: string | null;
+  dataUltimoAtendimentoOdontologico?: string | null;
+
+  prioridade: PriorityLevel;
+  motivosPrioridade?: string | null;
+
+  microarea?: string | null;
+  acsName?: string | null;
+
+  // Comparativos calculados em relação à carga imediatamente anterior
+  comparativo?: {
+    statusPA?: "Melhorou" | "Piorou" | "Estável" | "Sem Dado Anterior" | "Novo Registro";
+    deltaSistolica?: number; // ex: -10 (sistólica reduziu 10 mmHg) ou +12
+    deltaDiastolica?: number; // ex: -5 ou +8
+    statusPeso?: "Reduziu" | "Aumentou" | "Estável" | "Sem Dado Anterior";
+    deltaPeso?: number; // ex: -1.5 (kg) ou +2.0
+    deltaIMC?: number;
+    statusVisita?: "Atualizada" | "Inalterada" | "Sem Registro";
+    mudancaPrioridade?: {
+      anterior: PriorityLevel;
+      atual: PriorityLevel;
+    };
+  };
+}
+
 export interface Patient {
   id: string;
   name: string;
@@ -75,6 +124,7 @@ export interface Patient {
   weightHistory: WeightMeasurement[];
   timeline: PatientTimelineEvent[];
   historicoAcoes?: PatientActionRecord[];
+  historicoCargas?: PatientCargaSnapshot[];
 }
 
 export type PatientActionType =
