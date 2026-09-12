@@ -7,6 +7,7 @@ import { BadgePriority } from "@/components/ui/badge-priority";
 import { BarChartSVG, DonutChartSVG } from "@/components/ui/charts";
 import { MOCK_PATIENTS, MOCK_MICROAREAS } from "@/data/mock-data";
 import { getAllPatientsFromFirestore } from "@/lib/firebase/patients";
+import { getAllPatientsFromSupabase } from "@/lib/supabase/patients";
 import { getUnitAdministrativeDiagnostics } from "@/lib/firebase/units";
 import { Patient } from "@/types/dcnt";
 import { useRouter } from "next/navigation";
@@ -45,9 +46,20 @@ export default function DashboardPage() {
   const [selectedPatientForAction, setSelectedPatientForAction] = useState<Patient | null>(null);
   const [isActionModalOpen, setIsActionModalOpen] = useState(false);
 
-  // Carregar dados reais do Firestore
+  // Carregar dados reais (Supabase PostgreSQL prioritário com fallback Firestore)
   useEffect(() => {
     async function loadPatients() {
+      try {
+        const supabaseData = await getAllPatientsFromSupabase();
+        if (supabaseData && supabaseData.length > 0) {
+          setPatients(supabaseData);
+          setLoadingPatients(false);
+          return;
+        }
+      } catch (err) {
+        console.warn("Aviso ao carregar do Supabase, tentando Firestore:", err);
+      }
+
       const realData = await getAllPatientsFromFirestore({
         role,
         userUnitId,

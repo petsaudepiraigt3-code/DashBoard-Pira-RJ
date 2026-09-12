@@ -5,6 +5,7 @@ import { auth, db } from "@/lib/firebase";
 import { signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
 import { useRouter } from "next/navigation";
+import { useAuth } from "@/context/auth-context";
 import { HeartPulse, Lock, Mail, AlertCircle, Loader2 } from "lucide-react";
 
 export default function LoginPage() {
@@ -13,12 +14,21 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const router = useRouter();
+  const { loginWithDevCredentials } = useAuth();
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setLoading(true);
 
+    // 1. Tentar autenticação de desenvolvimento / administrador de teste
+    const devResult = await loginWithDevCredentials(email, password);
+    if (devResult.success) {
+      router.push("/dashboard");
+      return;
+    }
+
+    // 2. Se não for a credencial de teste, tenta autenticar via Firebase
     try {
       const userCred = await signInWithEmailAndPassword(auth, email, password);
       const currentUser = userCred.user;

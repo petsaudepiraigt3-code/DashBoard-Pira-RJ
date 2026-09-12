@@ -4,6 +4,7 @@ import React, { useState, useEffect, Suspense } from "react";
 import { AppLayout } from "@/components/layout/app-layout";
 import { MOCK_PATIENTS } from "@/data/mock-data";
 import { getAllPatientsFromFirestore } from "@/lib/firebase/patients";
+import { getAllPatientsFromSupabase } from "@/lib/supabase/patients";
 import { Patient } from "@/types/dcnt";
 import { BadgePriority } from "@/components/ui/badge-priority";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -55,6 +56,17 @@ function PacientesContent() {
 
   const loadData = async () => {
     setLoading(true);
+    try {
+      const supabaseData = await getAllPatientsFromSupabase();
+      if (supabaseData && supabaseData.length > 0) {
+        setPatients(supabaseData);
+        setLoading(false);
+        return;
+      }
+    } catch (err) {
+      console.warn("Aviso ao buscar pacientes do Supabase:", err);
+    }
+
     const realData = await getAllPatientsFromFirestore({
       role,
       userUnitId,

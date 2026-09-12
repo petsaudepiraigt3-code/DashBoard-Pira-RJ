@@ -6,6 +6,7 @@ import { createImportRecordInFirestore, updateImportRecordInFirestore } from "..
 import { ensureUnitMicroareaInFirestore } from "../firebase/units";
 import { maskCPF, maskCNS } from "./normalizer";
 import { PatientCargaSnapshot, PriorityLevel } from "@/types/dcnt";
+import { saveNormalizedPatientToSupabase } from "../supabase/patients";
 
 export interface ESUSImportProgress {
   step: "Preparando..." | "Importando pacientes..." | "Gravando históricos..." | "Finalizando..." | "Concluído";
@@ -353,6 +354,13 @@ export async function executeFivePatientsTestImportToFirestore(
       }, { merge: true });
     }
 
+    // Persistir simultaneamente no Supabase PostgreSQL (Tabelas do PDF)
+    try {
+      await saveNormalizedPatientToSupabase(norm, unidadeNome || "USF Arrozal 3");
+    } catch (e) {
+      console.warn("Aviso: falha ao salvar teste no Supabase:", e);
+    }
+
     maskedPatientsSummary.push({
       name: maskName(norm.nome),
       doc: norm.cpf ? maskCPF(norm.cpf) : norm.cns ? maskCNS(norm.cns) : "Sem doc",
@@ -659,6 +667,13 @@ export async function executeESUSImportToFirestore(
       );
       batchOpCount++;
       weightCount++;
+    }
+
+    // Persistir no Supabase PostgreSQL (Tabelas do PDF)
+    try {
+      await saveNormalizedPatientToSupabase(norm, unidadeNome || "USF Arrozal 3");
+    } catch (e) {
+      console.warn("Aviso ao sincronizar paciente com Supabase:", e);
     }
 
     if (batchOpCount >= BATCH_SIZE) {

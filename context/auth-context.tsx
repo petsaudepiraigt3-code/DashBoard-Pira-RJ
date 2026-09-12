@@ -28,6 +28,7 @@ interface AuthContextType {
   loading: boolean;
   unauthorizedMessage: string | null;
   logout: () => Promise<void>;
+  loginWithDevCredentials: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
   switchRole: (role: UserRole) => void;
   switchUnitForAdmin: (unitId: string, unitName: string) => void;
 }
@@ -160,38 +161,80 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   useEffect(() => {
+    // 1. Verificar se existe sessão de desenvolvimento ativa no localStorage
+    if (typeof window !== "undefined") {
+      const savedSession = localStorage.getItem("dev_auth_logged");
+      if (savedSession) {
+        try {
+          const parsed = JSON.parse(savedSession);
+          if (parsed && parsed.email) {
+            setUserProfile(parsed);
+            setRole(parsed.role || "ADMIN");
+            setUserUnitId(parsed.unitId || "USF-003");
+            setUserUnitNome(parsed.unitName || "USF Arrozal 3");
+            setLoading(false);
+            return;
+          }
+        } catch (e) {
+          localStorage.removeItem("dev_auth_logged");
+        }
+      }
+    }
+
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
       if (currentUser) {
-        await fetchUserProfileFromFirestore(currentUser);
+        try {
+          await fetchUserProfileFromFirestore(currentUser);
+        } catch (e) {
+          console.warn("Aviso ao buscar perfil Firestore:", e);
+        }
       } else {
-        // Usuário em ambiente local sem login ativo no Firebase Auth -> carregar perfil ADMIN Padrão
-        const units = await getAllActiveUnitsFromFirestore();
-        const defaultUnit = units.find((u) => u.codigo === "USF-003") || units[0];
-
-        const defaultAdmin: ExtendedUserProfile = {
-          uid: "dev-admin-uid",
-          name: "Administrador Sistema (Dev)",
-          email: "admin@dcntsaude.gov.br",
-          role: "ADMIN",
-          unitId: defaultUnit?.id || null,
-          unitName: defaultUnit?.nome || "USF Arrozal 3",
-          ativo: true,
-        };
-        setUserProfile(defaultAdmin);
-        setRole("ADMIN");
-        setUserUnitId(defaultAdmin.unitId || null);
-        setUserUnitNome(defaultAdmin.unitName || null);
-        setUnauthorizedMessage(null);
+        setUserProfile(null);
       }
       setLoading(false);
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+    };
   }, []);
 
   const logout = async () => {
-    await firebaseSignOut(auth);
+    try {
+      localStorage.removeItem("dev_auth_logged");
+      await firebaseSignOut(auth);
+    } catch (e) {
+      // Ignorar
+    }
+    setUser(null);
+    setUserProfile(null);
+  };
+
+  const loginWithDevCredentials = async (emailInput: string, passwordInput: string): Promise<{ success: boolean; error?: string }> => {
+    const cleanEmail = emailInput.trim().toLowerCase();
+    
+    // Credencial do Administrador
+    if (cleanEmail === "admin@dcntsaude.gov.br" && passwordInput === "Admin@123456") {
+      const devAdmin: ExtendedUserProfile = {
+        uid: "admin-dev-id",
+        name: "Administrador Sistema",
+        email: "admin@dcntsaude.gov.br",
+        role: "ADMIN",
+        unitId: "USF-003",
+        unitName: "USF Arrozal 3",
+        ativo: true,
+      };
+      localStorage.setItem("dev_auth_logged", JSON.stringify(devAdmin));
+      setUserProfile(devAdmin);
+      setRole("ADMIN");
+      setUserUnitId("USF-003");
+      setUserUnitNome("USF Arrozal 3");
+      setUnauthorizedMessage(null);
+      return { success: true };
+    }
+
+    return { success: false, error: "Credenciais inválidas. Verifique o e-mail e a senha informados." };
   };
 
   const switchRole = (newRole: UserRole) => {
@@ -235,6 +278,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         loading,
         unauthorizedMessage,
         logout,
+        loginWithDevCredentials,
         switchRole,
         switchUnitForAdmin,
       }}

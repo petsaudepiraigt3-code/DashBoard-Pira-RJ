@@ -4,6 +4,7 @@ import React, { use, useState, useEffect } from "react";
 import { AppLayout } from "@/components/layout/app-layout";
 import { MOCK_PATIENTS } from "@/data/mock-data";
 import { getAllPatientsFromFirestore, getPatientActionsFromFirestore, getPatientHistorySnapshotsFromFirestore } from "@/lib/firebase/patients";
+import { getAllPatientsFromSupabase } from "@/lib/supabase/patients";
 import { Patient, PatientActionRecord, PatientCargaSnapshot } from "@/types/dcnt";
 import { useAuth } from "@/context/auth-context";
 import { BadgePriority } from "@/components/ui/badge-priority";
@@ -44,20 +45,33 @@ export default function PacienteDetalhePage({
 
   useEffect(() => {
     async function loadData() {
+      try {
+        const supabaseData = await getAllPatientsFromSupabase();
+        if (supabaseData && supabaseData.length > 0) {
+          setPatients(supabaseData);
+        }
+      } catch (err) {
+        console.warn("Aviso ao carregar do Supabase:", err);
+      }
+
       const realData = await getAllPatientsFromFirestore({
         role,
         userUnitId,
         assignedMicroareaCodes: userProfile?.assignedMicroareaCodes,
       });
       if (realData && realData.length > 0) {
-        setPatients(realData);
+        setPatients((prev) => (prev.length > 0 && prev[0].id !== MOCK_PATIENTS[0].id ? prev : realData));
       }
 
       if (resolvedParams.id) {
-        const actions = await getPatientActionsFromFirestore(resolvedParams.id);
-        setRealActions(actions);
-        const snapshots = await getPatientHistorySnapshotsFromFirestore(resolvedParams.id);
-        setRealSnapshots(snapshots);
+        try {
+          const actions = await getPatientActionsFromFirestore(resolvedParams.id);
+          setRealActions(actions);
+          const snapshots = await getPatientHistorySnapshotsFromFirestore(resolvedParams.id);
+          setRealSnapshots(snapshots);
+        } catch (e) {
+          // Tratar silenciosamente
+        }
       }
     }
     loadData();

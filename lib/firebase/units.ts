@@ -86,51 +86,52 @@ export async function recordAuditLog(log: Omit<AuditLogDoc, "id" | "createdAt">)
   }
 }
 
-// 1. Obter todas as Unidades de Saúde ativas. Se o banco estiver limpo, semeia a unidade inicial padrão.
+// 1. Obter todas as Unidades de Saúde ativas. Se o banco estiver limpo ou demorar para responder, retorna unidades padrão.
 export async function getAllActiveUnitsFromFirestore(): Promise<HealthUnit[]> {
-  const units: HealthUnit[] = [];
+  const defaultUnits: HealthUnit[] = [
+    {
+      id: "USF-003",
+      nome: "USF Arrozal 3",
+      nomeNormalizado: "USF ARROZAL 3",
+      codigo: "USF-003",
+      cnes: "1234567",
+      tipo: "USF",
+      ativo: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+    {
+      id: "USF-001",
+      nome: "USF Saúde da Família - Central",
+      nomeNormalizado: "USF SAUDE DA FAMILIA CENTRAL",
+      codigo: "USF-001",
+      cnes: "7654321",
+      tipo: "USF",
+      ativo: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+  ];
+
   try {
-    const q = query(collection(db, "unidades"));
-    const querySnapshot = await getDocs(q);
+    const fetchPromise = async (): Promise<HealthUnit[]> => {
+      const q = query(collection(db, "unidades"));
+      const querySnapshot = await getDocs(q);
+      const list: HealthUnit[] = [];
+      querySnapshot.forEach((docSnap) => {
+        list.push({ id: docSnap.id, ...docSnap.data() } as HealthUnit);
+      });
+      return list.length > 0 ? list : defaultUnits;
+    };
 
-    querySnapshot.forEach((docSnap) => {
-      units.push({ id: docSnap.id, ...docSnap.data() } as HealthUnit);
-    });
+    const timeoutPromise = new Promise<HealthUnit[]>((resolve) =>
+      setTimeout(() => resolve(defaultUnits), 1000)
+    );
 
-    if (units.length === 0) {
-      const defaultUnits: Omit<HealthUnit, "id">[] = [
-        {
-          nome: "USF Arrozal 3",
-          nomeNormalizado: "USF ARROZAL 3",
-          codigo: "USF-003",
-          cnes: "1234567",
-          tipo: "USF",
-          ativo: true,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        },
-        {
-          nome: "USF Saúde da Família - Central",
-          nomeNormalizado: "USF SAUDE DA FAMILIA CENTRAL",
-          codigo: "USF-001",
-          cnes: "7654321",
-          tipo: "USF",
-          ativo: true,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        },
-      ];
-
-      for (const u of defaultUnits) {
-        const uRef = doc(collection(db, "unidades"));
-        await setDoc(uRef, u);
-        units.push({ id: uRef.id, ...u });
-      }
-    }
+    return await Promise.race([fetchPromise(), timeoutPromise]);
   } catch (err) {
-    // Tratar erros
+    return defaultUnits;
   }
-  return units;
 }
 
 // 2. Cadastrar nova Unidade de Saúde

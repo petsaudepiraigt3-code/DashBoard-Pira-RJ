@@ -6,18 +6,18 @@ import { useAuth } from "@/context/auth-context";
 import { Loading } from "@/components/ui/loading";
 
 export default function Home() {
-  const { user, loading } = useAuth();
+  const { user, userProfile, loading } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
     if (!loading) {
-      if (user) {
+      if (user || userProfile) {
         router.push("/dashboard");
       } else {
         router.push("/login");
       }
     }
-  }, [user, loading, router]);
+  }, [user, userProfile, loading, router]);
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-zinc-950">

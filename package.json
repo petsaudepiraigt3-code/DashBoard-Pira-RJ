@@ -10,6 +10,8 @@
     "sync:cloud": "node scripts/sync-cloud.js"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.116.0",
+    "@types/pg": "^8.23.1",
     "firebase": "^12.18.0",
     "firebase-admin": "^14.3.0",
     "jspdf": "^4.2.1",
@@ -17,6 +19,7 @@
     "lucide-react": "^1.33.0",
     "next": "16.3.1",
     "papaparse": "^5.6.0",
+    "pg": "^8.23.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "xlsx": "^0.18.5"
