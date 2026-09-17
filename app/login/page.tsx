@@ -21,8 +21,11 @@ export default function LoginPage() {
     setError(null);
     setLoading(true);
 
+    const cleanEmail = email.trim();
+    const cleanPassword = password.trim();
+
     // 1. Tentar autenticação de desenvolvimento / administrador de teste
-    const devResult = await loginWithDevCredentials(email, password);
+    const devResult = await loginWithDevCredentials(cleanEmail, cleanPassword);
     if (devResult.success) {
       router.push("/dashboard");
       return;

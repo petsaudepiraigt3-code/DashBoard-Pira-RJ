@@ -20,17 +20,19 @@ export function AppLayout({
   periodFilter,
   setPeriodFilter,
 }: AppLayoutProps) {
-  const { user, loading } = useAuth();
+  const { user, userProfile, loading } = useAuth();
   const router = useRouter();
   const [isOpenMobile, setIsOpenMobile] = useState(false);
 
+  const isAuthenticated = Boolean(user || userProfile);
+
   useEffect(() => {
-    if (!loading && !user) {
+    if (!loading && !isAuthenticated) {
       router.push("/login");
     }
-  }, [user, loading, router]);
+  }, [isAuthenticated, loading, router]);
 
-  if (loading || !user) {
+  if (loading || !isAuthenticated) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-zinc-950">
         <Loading message="Verificando autenticação..." />

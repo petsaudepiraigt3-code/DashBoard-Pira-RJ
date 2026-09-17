@@ -1,10 +1,15 @@
 import { createClient } from "@supabase/supabase-js";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "";
-const supabaseAnonKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "https://placeholder-project.supabase.co";
+const supabaseAnonKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder-anon-key";
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.warn("Aviso: NEXT_PUBLIC_SUPABASE_URL ou NEXT_PUBLIC_SUPABASE_ANON_KEY não configurados.");
+export const isSupabaseConfigured = Boolean(
+  (process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL) &&
+  (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
+);
+
+if (!isSupabaseConfigured) {
+  console.warn("Aviso: NEXT_PUBLIC_SUPABASE_URL ou NEXT_PUBLIC_SUPABASE_ANON_KEY não configurados. Supabase em modo fallback.");
 }
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
@@ -73,5 +78,68 @@ export interface AfericaoMedidasRow {
   peso: number | null;
   altura: number | null;
   data_afericao: string;
+  created_at?: string;
+}
+
+export interface AreaRow {
+  id_area: number;
+  codigo: string;
+  nome: string;
+  responsavel_nome: string;
+  responsavel_cargo: string;
+  responsavel_id: number | null;
+  cnes: string | null;
+  tipo: string;
+  ativa: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface MicroareaRow {
+  id_microarea: number;
+  id_area: number;
+  codigo: string;
+  nome: string;
+  responsavel_nome: string;
+  responsavel_id: number | null;
+  tipo: string;
+  ativa: boolean;
+  created_at?: string;
+  updated_at?: string;
+  area?: AreaRow;
+}
+
+export interface UsuarioRow {
+  id_usuario: number;
+  uid: string | null;
+  nome: string;
+  email: string;
+  perfil: "ADMIN" | "GERENTE" | "ACS" | string;
+  id_area: number | null;
+  id_microarea: number | null;
+  ativo: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ControleCargaRow {
+  id_carga: number;
+  data_carga: string;
+  hora_carga: string;
+  data_hora: string;
+  responsavel_carga: string;
+  responsavel_id: string | null;
+  responsavel_perfil: "GERENTE" | "ACS" | "ADMIN" | string;
+  id_area: number | null;
+  area_nome: string | null;
+  arquivo_nome: string | null;
+  tipo_carga: string;
+  total_registros: number;
+  novos_pacientes: number;
+  pacientes_atualizados: number;
+  novos_atendimentos: number;
+  novos_pesos: number;
+  status: string;
+  detalhes: string | null;
   created_at?: string;
 }

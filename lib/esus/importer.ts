@@ -6,7 +6,11 @@ import { createImportRecordInFirestore, updateImportRecordInFirestore } from "..
 import { ensureUnitMicroareaInFirestore } from "../firebase/units";
 import { maskCPF, maskCNS } from "./normalizer";
 import { PatientCargaSnapshot, PriorityLevel } from "@/types/dcnt";
-import { saveNormalizedPatientToSupabase } from "../supabase/patients";
+import {
+  saveNormalizedPatientToSupabase,
+  createControleCargaSupabase,
+  updateControleCargaSupabase,
+} from "../supabase/patients";
 
 export interface ESUSImportProgress {
   step: "Preparando..." | "Importando pacientes..." | "Gravando históricos..." | "Finalizando..." | "Concluído";
@@ -19,6 +23,8 @@ export interface ESUSImportProgress {
   paCount: number;
   weightCount: number;
   reviewCount: number;
+  novosAtendimentos?: number;
+  novosPesos?: number;
   percent: number;
 }
 
@@ -33,6 +39,8 @@ export interface FivePatientsTestResult {
   updatedLinks: number;
   paCount: number;
   weightCount: number;
+  novosAtendimentos?: number;
+  novosPesos?: number;
   maskedPatients: { name: string; doc: string; microarea: string; pa: string; bmi: string }[];
   patientDocStatus: "OK" | "Erro";
   linksStatus: "OK" | "Erro";
@@ -218,6 +226,18 @@ export async function executeFivePatientsTestImportToFirestore(
   let updatedLinks = 0;
   let paCount = 0;
   let weightCount = 0;
+  let novosAtendimentos = 0;
+  let novosPesos = 0;
+
+  // Registrar carga no banco relacional Supabase (controle_carga)
+  const supaCargaId = await createControleCargaSupabase({
+    responsavel_carga: userName,
+    responsavel_perfil: userRole || "GERENTE",
+    area_nome: unidadeNome,
+    arquivo_nome: fileName,
+    tipo_carga: "TESTE",
+    total_registros: sliceRows.length,
+  });
 
   const maskedPatientsSummary: { name: string; doc: string; microarea: string; pa: string; bmi: string }[] = [];
 
@@ -356,7 +376,11 @@ export async function executeFivePatientsTestImportToFirestore(
 
     // Persistir simultaneamente no Supabase PostgreSQL (Tabelas do PDF)
     try {
-      await saveNormalizedPatientToSupabase(norm, unidadeNome || "USF Arrozal 3");
+      const supaRes = await saveNormalizedPatientToSupabase(norm, unidadeNome || "USF Arrozal 3", {
+        idCarga: supaCargaId || undefined,
+      });
+      if (supaRes?.atendimentoInserido) novosAtendimentos++;
+      if (supaRes?.pesoInserido) novosPesos++;
     } catch (e) {
       console.warn("Aviso: falha ao salvar teste no Supabase:", e);
     }
@@ -367,6 +391,17 @@ export async function executeFivePatientsTestImportToFirestore(
       microarea: norm.microarea || "Não informada",
       pa: norm.systolic ? `${norm.systolic}/${norm.diastolic} mmHg` : "N/A",
       bmi: norm.imc ? `${norm.imc.toFixed(2)}` : "N/A",
+    });
+  }
+
+  // Atualizar registro no controle_carga do Supabase
+  if (supaCargaId) {
+    await updateControleCargaSupabase(supaCargaId, {
+      novos_pacientes: newPatients,
+      pacientes_atualizados: updatedPatients,
+      novos_atendimentos: novosAtendimentos,
+      novos_pesos: novosPesos,
+      status: "Concluído",
     });
   }
 
@@ -397,7 +432,7 @@ export async function executeFivePatientsTestImportToFirestore(
 
   return {
     success: true,
-    message: `Teste de ${sliceRows.length} pacientes gravado e confirmado com sucesso na unidade ${unidadeNome}.`,
+    message: `Teste de ${sliceRows.length} pacientes gravado com ${novosAtendimentos} novo(s) atendimento(s) e ${novosPesos} nova(s) pesagem(ns) confirmados na unidade ${unidadeNome}.`,
     processedCount: sliceRows.length,
     unidadeNome,
     newPatients,
@@ -406,6 +441,8 @@ export async function executeFivePatientsTestImportToFirestore(
     updatedLinks,
     paCount,
     weightCount,
+    novosAtendimentos,
+    novosPesos,
     maskedPatients: maskedPatientsSummary,
     patientDocStatus: "OK",
     linksStatus: "OK",
@@ -443,7 +480,9 @@ export async function executeESUSImportToFirestore(
     uLinks: number,
     pa: number,
     weight: number,
-    review: number
+    review: number,
+    novosAtend: number = 0,
+    novosPesos: number = 0
   ) => {
     if (onProgress) {
       const percent = Math.min(100, Math.round((processed / (parseResult.totalRowsCount || 1)) * 100));
@@ -458,12 +497,14 @@ export async function executeESUSImportToFirestore(
         paCount: pa,
         weightCount: weight,
         reviewCount: review,
+        novosAtendimentos: novosAtend,
+        novosPesos: novosPesos,
         percent,
       });
     }
   };
 
-  updateProgress("Preparando...", 0, 0, 0, 0, 0, 0, 0, 0);
+  updateProgress("Preparando...", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 
   const existingMap = await getExistingPatientsMap();
 
@@ -474,6 +515,18 @@ export async function executeESUSImportToFirestore(
   let paCount = 0;
   let weightCount = 0;
   let reviewCount = 0;
+  let novosAtendimentosCount = 0;
+  let novosPesosCount = 0;
+
+  // Criar registro na tabela 'controle_carga' do banco relacional
+  const supaCargaId = await createControleCargaSupabase({
+    responsavel_carga: userName,
+    responsavel_perfil: userRole || "GERENTE",
+    area_nome: unidadeNome,
+    arquivo_nome: fileName,
+    tipo_carga: "COMPLETA",
+    total_registros: parseResult.totalRowsCount,
+  });
 
   const validRows = parseResult.rows.filter((r) => r.status !== "Erro" && r.normalizedData);
 
@@ -671,7 +724,11 @@ export async function executeESUSImportToFirestore(
 
     // Persistir no Supabase PostgreSQL (Tabelas do PDF)
     try {
-      await saveNormalizedPatientToSupabase(norm, unidadeNome || "USF Arrozal 3");
+      const supaRes = await saveNormalizedPatientToSupabase(norm, unidadeNome || "USF Arrozal 3", {
+        idCarga: supaCargaId || undefined,
+      });
+      if (supaRes?.atendimentoInserido) novosAtendimentosCount++;
+      if (supaRes?.pesoInserido) novosPesosCount++;
     } catch (e) {
       console.warn("Aviso ao sincronizar paciente com Supabase:", e);
     }
@@ -691,7 +748,9 @@ export async function executeESUSImportToFirestore(
       updatedLinksCount,
       paCount,
       weightCount,
-      reviewCount
+      reviewCount,
+      novosAtendimentosCount,
+      novosPesosCount
     );
   }
 
@@ -699,7 +758,19 @@ export async function executeESUSImportToFirestore(
     await currentBatch.commit();
   }
 
-  updateProgress("Finalizando...", parseResult.totalRowsCount, newPatientsCount, updatedPatientsCount, newLinksCount, updatedLinksCount, paCount, weightCount, reviewCount);
+  updateProgress(
+    "Finalizando...",
+    parseResult.totalRowsCount,
+    newPatientsCount,
+    updatedPatientsCount,
+    newLinksCount,
+    updatedLinksCount,
+    paCount,
+    weightCount,
+    reviewCount,
+    novosAtendimentosCount,
+    novosPesosCount
+  );
 
   // Validação da Soma de Consistência
   const totalSuccessful = newPatientsCount + updatedPatientsCount;
@@ -712,6 +783,18 @@ export async function executeESUSImportToFirestore(
     finalStatus = "Concluído com avisos";
   }
 
+  // Atualizar controle_carga no Supabase
+  if (supaCargaId) {
+    await updateControleCargaSupabase(supaCargaId, {
+      novos_pacientes: newPatientsCount,
+      pacientes_atualizados: updatedPatientsCount,
+      novos_atendimentos: novosAtendimentosCount,
+      novos_pesos: novosPesosCount,
+      status: finalStatus,
+      detalhes: `Importação com ${validRows.length} registros válidos.`,
+    });
+  }
+
   await updateImportRecordInFirestore(importId, {
     novosPacientes: newPatientsCount,
     pacientesAtualizados: updatedPatientsCount,
@@ -722,7 +805,19 @@ export async function executeESUSImportToFirestore(
     status: finalStatus,
   });
 
-  updateProgress("Concluído", parseResult.totalRowsCount, newPatientsCount, updatedPatientsCount, newLinksCount, updatedLinksCount, paCount, weightCount, reviewCount);
+  updateProgress(
+    "Concluído",
+    parseResult.totalRowsCount,
+    newPatientsCount,
+    updatedPatientsCount,
+    newLinksCount,
+    updatedLinksCount,
+    paCount,
+    weightCount,
+    reviewCount,
+    novosAtendimentosCount,
+    novosPesosCount
+  );
 
   return {
     id: importId,

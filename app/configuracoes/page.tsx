@@ -26,6 +26,12 @@ import { useRouter } from "next/navigation";
 import { auth, db } from "@/lib/firebase";
 import { doc, updateDoc, serverTimestamp } from "firebase/firestore";
 import {
+  getControleCargasSupabase,
+  saveAreaSupabase,
+  saveMicroareaSupabase,
+} from "@/lib/supabase/patients";
+import { getImportHistoryFromFirestore } from "@/lib/firebase/imports";
+import {
   Settings,
   Users,
   Building2,
@@ -66,10 +72,10 @@ export default function ConfiguracoesPage() {
   const router = useRouter();
   const { role, userUnitId, userUnitNome, userProfile } = useAuth();
 
-  const [activeTab, setActiveTab] = useState<"unidades" | "microareas" | "acs" | "usuarios" | "diagnostico" | "parametros">("microareas");
+  const [activeTab, setActiveTab] = useState<"unidades" | "microareas" | "acs" | "usuarios" | "cargas" | "diagnostico" | "parametros">("microareas");
   const [params, setParams] = useState<DcntParameters>(MOCK_PARAMETERS);
 
-  // Unidades de Saúde
+  // Unidades de Saúde / Áreas
   const [units, setUnits] = useState<HealthUnit[]>([]);
   const [selectedUnitId, setSelectedUnitId] = useState<string>("");
   const [loadingUnits, setLoadingUnits] = useState(true);
@@ -87,6 +93,10 @@ export default function ConfiguracoesPage() {
   const [allUsers, setAllUsers] = useState<ReconciledUser[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
 
+  // Controle de Cargas
+  const [cargasHistory, setCargasHistory] = useState<any[]>([]);
+  const [loadingCargas, setLoadingCargas] = useState(false);
+
   // Diagnóstico Administrativo
   const [unitDiag, setUnitDiag] = useState<any>(null);
   const [isMigrating, setIsMigrating] = useState(false);
@@ -94,7 +104,14 @@ export default function ConfiguracoesPage() {
 
   // Modais de Criação
   const [showNewUnitModal, setShowNewUnitModal] = useState(false);
-  const [newUnitForm, setNewUnitForm] = useState({ nome: "", codigo: "", cnes: "", tipo: "USF" });
+  const [newUnitForm, setNewUnitForm] = useState({
+    nome: "",
+    codigo: "",
+    cnes: "",
+    tipo: "USF",
+    responsavelNome: "Carlos Alberto",
+    responsavelCargo: "Gerente da Unidade",
+  });
 
   // Modal Novo ACS
   const [showNewAcsModal, setShowNewAcsModal] = useState(false);
@@ -220,9 +237,99 @@ export default function ConfiguracoesPage() {
     }
   };
 
+  // Carregar Histórico do Controle de Cargas
+  const fetchCargas = async () => {
+    setLoadingCargas(true);
+    try {
+      const supaCargas = await getControleCargasSupabase(50);
+      if (supaCargas && supaCargas.length > 0) {
+        setCargasHistory(supaCargas);
+        setLoadingCargas(false);
+        return;
+      }
+      const firestoreHistory = await getImportHistoryFromFirestore();
+      setCargasHistory(
+        firestoreHistory.map((item) => ({
+          id_carga: item.id || Math.random().toString(),
+          data_carga: item.uploadedAt?.substring(0, 10) || new Date().toISOString().substring(0, 10),
+          hora_carga: item.uploadedAt?.substring(11, 16) || "00:00",
+          data_hora: item.uploadedAt || new Date().toISOString(),
+          responsavel_carga: item.uploadedBy || "Responsável Carga",
+          responsavel_perfil: "GERENTE",
+          area_nome: item.unidadeNome || "USF Arrozal 3",
+          arquivo_nome: item.fileName || "relatorio-esus.csv",
+          total_registros: item.totalRows || 0,
+          novos_pacientes: item.newPatients || 0,
+          pacientes_atualizados: item.updatedPatients || 0,
+          novos_atendimentos: (item as any).novosAtendimentos || 0,
+          novos_pesos: item.weightCount || (item as any).novosPesos || 0,
+          status: item.status || "Concluído",
+        }))
+      );
+    } catch (e) {
+      console.warn("Aviso ao buscar controle de cargas:", e);
+    } finally {
+      setLoadingCargas(false);
+    }
+  };
+
+  const [isCreatingUnit, setIsCreatingUnit] = useState(false);
+
+  // Criar Nova Área / Unidade de Saúde
+  const handleCreateUnit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newUnitForm.nome || !newUnitForm.codigo) {
+      alert("Nome e Código da Área são obrigatórios.");
+      return;
+    }
+    setIsCreatingUnit(true);
+    try {
+      // 1. Criar no Firestore
+      await createHealthUnit({
+        nome: newUnitForm.nome,
+        codigo: newUnitForm.codigo,
+        cnes: newUnitForm.cnes || undefined,
+        tipo: newUnitForm.tipo,
+        ativo: true,
+      });
+
+      // 2. Salvar no Supabase
+      try {
+        await saveAreaSupabase({
+          codigo: newUnitForm.codigo,
+          nome: newUnitForm.nome,
+          responsavel_nome: newUnitForm.responsavelNome || "Gerente da Unidade",
+          responsavel_cargo: newUnitForm.responsavelCargo || "Gerente da Unidade",
+          cnes: newUnitForm.cnes || null,
+          tipo: newUnitForm.tipo,
+          ativa: true,
+        });
+      } catch (e) {
+        console.warn("Aviso ao salvar área no Supabase:", e);
+      }
+
+      await fetchUnits();
+      setShowNewUnitModal(false);
+      setNewUnitForm({
+        nome: "",
+        codigo: "",
+        cnes: "",
+        tipo: "USF",
+        responsavelNome: "Carlos Alberto",
+        responsavelCargo: "Gerente da Unidade",
+      });
+      alert("Área / Unidade cadastrada com sucesso!");
+    } catch (err: any) {
+      alert(`Erro ao cadastrar área: ${err.message}`);
+    } finally {
+      setIsCreatingUnit(false);
+    }
+  };
+
   useEffect(() => {
     fetchUnits();
     fetchAllUsers();
+    fetchCargas();
   }, []);
 
   useEffect(() => {
@@ -635,7 +742,7 @@ export default function ConfiguracoesPage() {
             }`}
           >
             <Building2 className="h-4 w-4" />
-            <span>Unidades de Saúde</span>
+            <span>Áreas (Unidades de Saúde)</span>
           </button>
         )}
 
@@ -661,6 +768,21 @@ export default function ConfiguracoesPage() {
         >
           <UserCheck className="h-4 w-4" />
           <span>Equipe de ACS</span>
+        </button>
+
+        <button
+          onClick={() => {
+            setActiveTab("cargas");
+            fetchCargas();
+          }}
+          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition-all cursor-pointer ${
+            activeTab === "cargas"
+              ? "border-blue-600 text-blue-600 dark:border-blue-500 dark:text-blue-400"
+              : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+          }`}
+        >
+          <FileSpreadsheet className="h-4 w-4" />
+          <span>Controle de Cargas</span>
         </button>
 
         {(role as string) === "ADMIN" && (
@@ -705,7 +827,7 @@ export default function ConfiguracoesPage() {
       </div>
 
       {/* SELETOR DE UNIDADE ATIVA (ADMIN OU FIXO GERENTE) */}
-      {activeTab !== "unidades" && activeTab !== "usuarios" && (
+      {activeTab !== "unidades" && activeTab !== "usuarios" && activeTab !== "cargas" && (
         <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-2xs dark:border-zinc-800 dark:bg-zinc-900 flex items-center justify-between my-4">
           <div className="flex items-center gap-2">
             <Building2 className="h-4 w-4 text-blue-600" />
@@ -760,8 +882,9 @@ export default function ConfiguracoesPage() {
                 <thead className="border-b border-zinc-100 bg-zinc-50 uppercase text-zinc-600 dark:border-zinc-800 dark:bg-zinc-800/50 font-bold">
                   <tr>
                     <th className="px-4 py-3">Microárea</th>
+                    <th className="px-4 py-3">Área a que Pertence</th>
                     <th className="px-4 py-3">Tipo</th>
-                    <th className="px-4 py-3">ACS Responsável</th>
+                    <th className="px-4 py-3">Responsável (ACS)</th>
                     <th className="px-4 py-3">Pacientes (Derivado)</th>
                     <th className="px-4 py-3">Status</th>
                     <th className="px-4 py-3">Ações</th>
@@ -775,6 +898,9 @@ export default function ConfiguracoesPage() {
                       <tr key={m.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-800/40">
                         <td className="px-4 py-3 font-extrabold text-zinc-900 dark:text-zinc-100">
                           {m.nome}
+                        </td>
+                        <td className="px-4 py-3 font-semibold text-blue-700 dark:text-blue-300">
+                          {selectedUnitObj?.nome || "USF Arrozal 3"}
                         </td>
                         <td className="px-4 py-3">
                           <span className={`inline-flex rounded px-2 py-0.5 text-[10px] font-bold ${
@@ -987,16 +1113,16 @@ export default function ConfiguracoesPage() {
         </div>
       )}
 
-      {/* ABA: UNIDADES DE SAÚDE (ADMIN) */}
+      {/* ABA: ÁREAS / UNIDADES DE SAÚDE (ADMIN) */}
       {activeTab === "unidades" && (role as string) === "ADMIN" && (
         <div className="space-y-4 my-4">
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-sm font-bold text-zinc-900 dark:text-zinc-100">
-                Unidades de Saúde Cadastradas
+                Áreas e Unidades de Saúde Cadastradas
               </h2>
               <p className="text-xs text-zinc-500">
-                Gestão das USFs e estrutura administrativa no Cloud Firestore.
+                Gestão das Áreas de cobertura, seus Gerentes ou Responsáveis designados no banco de dados.
               </p>
             </div>
 
@@ -1005,36 +1131,154 @@ export default function ConfiguracoesPage() {
               className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3.5 py-2 text-xs font-bold text-white shadow-2xs hover:bg-blue-700 cursor-pointer"
             >
               <Plus className="h-4 w-4" />
-              <span>Nova Unidade de Saúde</span>
+              <span>Nova Área (Unidade)</span>
             </button>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {units.map((u) => (
-              <div
-                key={u.id}
-                className={`rounded-xl border p-5 shadow-2xs space-y-3 transition-all ${
-                  selectedUnitId === u.id
-                    ? "border-blue-500 bg-blue-50/20 dark:bg-blue-950/20 dark:border-blue-600"
-                    : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"
-                }`}
-              >
-                <div className="flex items-start justify-between">
-                  <div>
-                    <h3 className="text-sm font-extrabold text-zinc-900 dark:text-zinc-100">
-                      {u.nome}
-                    </h3>
-                    <span className="text-xs font-mono text-zinc-500">
-                      Código: {u.codigo} | CNES: {u.cnes || "Não informado"} | Tipo: {u.tipo}
+            {units.map((u) => {
+              const respNome = (u as any).responsavelNome || (u.codigo === "USF-003" ? "Carlos Alberto" : "Dra. Márcia Regina");
+              const respCargo = (u as any).responsavelCargo || (u.codigo === "USF-003" ? "Gerente da Unidade" : "Responsável Técnico / Coordenação");
+              const isGerente = respCargo.toLowerCase().includes("gerente");
+
+              return (
+                <div
+                  key={u.id}
+                  className={`rounded-xl border p-5 shadow-2xs space-y-3 transition-all ${
+                    selectedUnitId === u.id
+                      ? "border-blue-500 bg-blue-50/20 dark:bg-blue-950/20 dark:border-blue-600"
+                      : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"
+                  }`}
+                >
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <h3 className="text-sm font-extrabold text-zinc-900 dark:text-zinc-100">
+                        {u.nome}
+                      </h3>
+                      <span className="text-xs font-mono text-zinc-500">
+                        Código: {u.codigo} | CNES: {u.cnes || "Não informado"} | Tipo: {u.tipo}
+                      </span>
+                    </div>
+                    <span className="rounded bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
+                      Ativa
                     </span>
                   </div>
-                  <span className="rounded bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
-                    Ativa
-                  </span>
+
+                  <div className="border-t border-zinc-100 dark:border-zinc-800 pt-3 space-y-1.5 text-xs">
+                    <div className="flex items-center justify-between">
+                      <span className="text-zinc-500 font-medium">Responsável pela Área:</span>
+                      <span className="font-extrabold text-zinc-900 dark:text-zinc-100">{respNome}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-zinc-500 font-medium">Cargo / Função:</span>
+                      <span className={`rounded px-2 py-0.5 text-[10px] font-bold ${
+                        isGerente
+                          ? "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300"
+                          : "bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300"
+                      }`}>
+                        {respCargo}
+                      </span>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
+        </div>
+      )}
+
+      {/* ABA: CONTROLE DE CARGA */}
+      {activeTab === "cargas" && (
+        <div className="space-y-4 my-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-sm font-bold text-zinc-900 dark:text-zinc-100">
+                Controle de Cargas e Histórico de Uploads (e-SUS APS)
+              </h2>
+              <p className="text-xs text-zinc-500">
+                Registro de todas as cargas contendo data, hora, responsável e contagem de novos atendimentos e pesos adicionados.
+              </p>
+            </div>
+
+            <button
+              onClick={fetchCargas}
+              disabled={loadingCargas}
+              className="flex items-center gap-1.5 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs font-bold text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 cursor-pointer disabled:opacity-50"
+            >
+              {loadingCargas ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+              <span>Atualizar Histórico</span>
+            </button>
+          </div>
+
+          {loadingCargas ? (
+            <div className="p-8 text-center text-xs text-zinc-500">Carregando histórico de cargas...</div>
+          ) : cargasHistory.length === 0 ? (
+            <div className="p-8 text-center text-xs font-semibold text-zinc-500 border border-dashed border-zinc-200 rounded-xl dark:border-zinc-800">
+              Nenhuma carga registrada no banco de dados.
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+              <table className="w-full text-left text-xs">
+                <thead className="border-b border-zinc-100 bg-zinc-50 uppercase text-zinc-600 dark:border-zinc-800 dark:bg-zinc-800/50 font-bold">
+                  <tr>
+                    <th className="px-4 py-3">Data e Hora</th>
+                    <th className="px-4 py-3">Responsável pela Carga</th>
+                    <th className="px-4 py-3">Área / Unidade</th>
+                    <th className="px-4 py-3">Total Registros</th>
+                    <th className="px-4 py-3">Novos Pacientes</th>
+                    <th className="px-4 py-3">Novos Atendimentos</th>
+                    <th className="px-4 py-3">Novos Pesos</th>
+                    <th className="px-4 py-3">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800 font-medium">
+                  {cargasHistory.map((c, idx) => (
+                    <tr key={c.id_carga || idx} className="hover:bg-zinc-50 dark:hover:bg-zinc-800/40">
+                      <td className="px-4 py-3 font-mono font-bold text-zinc-900 dark:text-zinc-100">
+                        {c.data_carga} às {c.hora_carga || "00:00"}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-extrabold text-zinc-900 dark:text-zinc-100">{c.responsavel_carga}</span>
+                          <span className={`rounded px-1.5 py-0.2 text-[9px] font-extrabold uppercase ${
+                            c.responsavel_perfil === "ACS"
+                              ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                              : "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300"
+                          }`}>
+                            {c.responsavel_perfil || "Gerente"}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 font-semibold text-zinc-700 dark:text-zinc-300">
+                        {c.area_nome || "USF Arrozal 3"}
+                      </td>
+                      <td className="px-4 py-3 font-bold text-zinc-900 dark:text-zinc-100">
+                        {c.total_registros}
+                      </td>
+                      <td className="px-4 py-3 font-bold text-blue-600">
+                        +{c.novos_pacientes || 0}
+                      </td>
+                      <td className="px-4 py-3 font-extrabold text-emerald-600">
+                        +{c.novos_atendimentos || 0}
+                      </td>
+                      <td className="px-4 py-3 font-extrabold text-purple-600">
+                        +{c.novos_pesos || 0}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex rounded px-2 py-0.5 text-[10px] font-bold ${
+                          c.status === "Concluído"
+                            ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                            : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                        }`}>
+                          {c.status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
@@ -1700,6 +1944,113 @@ export default function ConfiguracoesPage() {
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: NOVA ÁREA (UNIDADE DE SAÚDE) */}
+      {showNewUnitModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 space-y-4">
+            <h3 className="text-base font-bold text-zinc-900 dark:text-zinc-100">
+              Cadastrar Nova Área (Unidade de Saúde)
+            </h3>
+
+            <form onSubmit={handleCreateUnit} className="space-y-3 text-xs font-medium">
+              <div>
+                <label className="block font-semibold mb-1">Nome da Área / Unidade *:</label>
+                <input
+                  type="text"
+                  placeholder="Ex: USF Arrozal 3"
+                  value={newUnitForm.nome}
+                  onChange={(e) => setNewUnitForm({ ...newUnitForm, nome: e.target.value })}
+                  className="w-full rounded-lg border p-2 dark:bg-zinc-800"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold mb-1">Código da Área *:</label>
+                <input
+                  type="text"
+                  placeholder="Ex: USF-003"
+                  value={newUnitForm.codigo}
+                  onChange={(e) => setNewUnitForm({ ...newUnitForm, codigo: e.target.value })}
+                  className="w-full rounded-lg border p-2 dark:bg-zinc-800"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold mb-1">Responsável pela Área *:</label>
+                <input
+                  type="text"
+                  placeholder="Ex: Carlos Alberto"
+                  value={newUnitForm.responsavelNome}
+                  onChange={(e) => setNewUnitForm({ ...newUnitForm, responsavelNome: e.target.value })}
+                  className="w-full rounded-lg border p-2 dark:bg-zinc-800"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold mb-1">Cargo / Função do Responsável:</label>
+                <input
+                  type="text"
+                  placeholder="Ex: Gerente da Unidade, Coordenador, etc."
+                  value={newUnitForm.responsavelCargo}
+                  onChange={(e) => setNewUnitForm({ ...newUnitForm, responsavelCargo: e.target.value })}
+                  className="w-full rounded-lg border p-2 dark:bg-zinc-800"
+                />
+                <span className="text-[10px] text-zinc-500 mt-0.5 block">
+                  Padrão: Gerente da Unidade (ou informe outro cargo/função se não for gerente).
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block font-semibold mb-1">CNES:</label>
+                  <input
+                    type="text"
+                    placeholder="Ex: 1234567"
+                    value={newUnitForm.cnes}
+                    onChange={(e) => setNewUnitForm({ ...newUnitForm, cnes: e.target.value })}
+                    className="w-full rounded-lg border p-2 dark:bg-zinc-800"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold mb-1">Tipo:</label>
+                  <select
+                    value={newUnitForm.tipo}
+                    onChange={(e) => setNewUnitForm({ ...newUnitForm, tipo: e.target.value })}
+                    className="w-full rounded-lg border p-2 dark:bg-zinc-800 cursor-pointer"
+                  >
+                    <option value="USF">USF</option>
+                    <option value="UBS">UBS</option>
+                    <option value="UBDS">UBDS</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowNewUnitModal(false)}
+                  disabled={isCreatingUnit}
+                  className="rounded-lg border px-3 py-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isCreatingUnit}
+                  className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-1.5 text-white font-bold cursor-pointer disabled:opacity-50"
+                >
+                  {isCreatingUnit && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  <span>Salvar Área</span>
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

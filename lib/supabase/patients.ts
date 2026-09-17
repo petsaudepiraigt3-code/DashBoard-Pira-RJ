@@ -1,4 +1,15 @@
-import { supabase, PacienteRow, AtendimentoRow, AfericaoPressaoRow, AfericaoMedidasRow, TipoAtendimento } from "../supabase";
+import {
+  supabase,
+  PacienteRow,
+  AtendimentoRow,
+  AfericaoPressaoRow,
+  AfericaoMedidasRow,
+  TipoAtendimento,
+  AreaRow,
+  MicroareaRow,
+  UsuarioRow,
+  ControleCargaRow,
+} from "../supabase";
 import { Patient, PriorityLevel, PAMeasurement, WeightMeasurement } from "@/types/dcnt";
 import { NormalizedPatientRecord } from "../esus/types";
 import { calculateAdminPriorityScore } from "../utils/priority";
@@ -223,10 +234,31 @@ export async function ensureComorbidade(tipo: string): Promise<number | null> {
 /**
  * Salva um paciente normalizado do e-SUS APS nas 6 tabelas relacionais do Supabase.
  */
+/**
+ * Salva um paciente normalizado do e-SUS APS nas tabelas relacionais do Supabase.
+ * Compara os dados do usuário/paciente e adiciona novos registros de atendimento,
+ * aferição de peso/medidas e PA se ainda não existirem no banco.
+ */
 export async function saveNormalizedPatientToSupabase(
   norm: NormalizedPatientRecord,
-  unidadeNome: string = "USF Arrozal 3"
-): Promise<{ success: boolean; patientId?: number; error?: string }> {
+  unidadeNome: string = "USF Arrozal 3",
+  options?: {
+    idCarga?: number;
+  }
+): Promise<{
+  success: boolean;
+  patientId?: number;
+  isNewPatient: boolean;
+  atendimentoInserido: boolean;
+  pesoInserido: boolean;
+  pressaoInserida: boolean;
+  error?: string;
+}> {
+  let isNewPatient = false;
+  let atendimentoInserido = false;
+  let pesoInserido = false;
+  let pressaoInserida = false;
+
   try {
     // 1. Extrair número da microárea
     let microareaNum: number | null = null;
@@ -286,6 +318,7 @@ export async function saveNormalizedPatientToSupabase(
 
       if (updErr) throw updErr;
       patientId = existingPatientId;
+      isNewPatient = false;
     } else {
       const { data: newPat, error: insErr } = await supabase
         .from("paciente")
@@ -295,6 +328,7 @@ export async function saveNormalizedPatientToSupabase(
 
       if (insErr || !newPat) throw insErr || new Error("Falha ao inserir paciente");
       patientId = newPat.id_paciente;
+      isNewPatient = true;
     }
 
     // 3. Gravar Aferição de Pressão se presente
@@ -314,8 +348,13 @@ export async function saveNormalizedPatientToSupabase(
           pressao_sistolica: norm.systolic,
           pressao_diastolica: norm.diastolic,
           data_afericao: paDate,
+          id_carga: options?.idCarga || null,
         });
-        if (paErr) console.error("Erro ao inserir afericao_pressao:", paErr);
+        if (paErr) {
+          console.error("Erro ao inserir afericao_pressao:", paErr);
+        } else {
+          pressaoInserida = true;
+        }
       }
     }
 
@@ -330,12 +369,18 @@ export async function saveNormalizedPatientToSupabase(
         .maybeSingle();
 
       if (!existingMed) {
-        await supabase.from("afericao_medidas").insert({
+        const { error: medErr } = await supabase.from("afericao_medidas").insert({
           id_paciente: patientId,
           peso: norm.peso || null,
           altura: norm.altura || null,
           data_afericao: medDate,
+          id_carga: options?.idCarga || null,
         });
+        if (medErr) {
+          console.error("Erro ao inserir afericao_medidas:", medErr);
+        } else {
+          pesoInserido = true;
+        }
       }
     }
 
@@ -358,11 +403,17 @@ export async function saveNormalizedPatientToSupabase(
           .maybeSingle();
 
         if (!existingAtt) {
-          await supabase.from("atendimento").insert({
+          const { error: attErr } = await supabase.from("atendimento").insert({
             id_paciente: patientId,
             tipo_atendimento: att.tipo,
             data_ultimo_atendimento: att.date,
+            id_carga: options?.idCarga || null,
           });
+          if (attErr) {
+            console.error("Erro ao inserir atendimento:", attErr);
+          } else {
+            atendimentoInserido = true;
+          }
         }
       }
     }
@@ -379,16 +430,289 @@ export async function saveNormalizedPatientToSupabase(
     for (const cName of detectedComorbidities) {
       const comorbId = await ensureComorbidade(cName);
       if (comorbId) {
-        // Tenta associar sem erro de chave duplicada
         await supabase
           .from("paciente_comorbidade")
           .upsert({ id_paciente: patientId, id_comorbidade: comorbId }, { onConflict: "id_paciente,id_comorbidade" });
       }
     }
 
-    return { success: true, patientId };
+    return {
+      success: true,
+      patientId,
+      isNewPatient,
+      atendimentoInserido,
+      pesoInserido,
+      pressaoInserida,
+    };
   } catch (err: any) {
     console.error("Erro ao salvar paciente no Supabase:", err);
-    return { success: false, error: err.message };
+    return {
+      success: false,
+      isNewPatient: false,
+      atendimentoInserido: false,
+      pesoInserido: false,
+      pressaoInserida: false,
+      error: err.message,
+    };
+  }
+}
+
+/**
+ * Cria registro na tabela 'controle_carga' do Supabase no início do upload.
+ */
+export async function createControleCargaSupabase(payload: {
+  responsavel_carga: string;
+  responsavel_id?: string | null;
+  responsavel_perfil?: string;
+  area_nome?: string;
+  id_area?: number | null;
+  arquivo_nome?: string;
+  tipo_carga?: string;
+  total_registros?: number;
+}): Promise<number | null> {
+  try {
+    const now = new Date();
+    const data_carga = now.toISOString().substring(0, 10);
+    const hora_carga = now.toTimeString().substring(0, 8);
+
+    const { data, error } = await supabase
+      .from("controle_carga")
+      .insert({
+        data_carga,
+        hora_carga,
+        data_hora: now.toISOString(),
+        responsavel_carga: payload.responsavel_carga,
+        responsavel_id: payload.responsavel_id || null,
+        responsavel_perfil: payload.responsavel_perfil || "GERENTE",
+        id_area: payload.id_area || null,
+        area_nome: payload.area_nome || "USF Arrozal 3",
+        arquivo_nome: payload.arquivo_nome || "esus-upload.csv",
+        tipo_carga: payload.tipo_carga || "COMPLETA",
+        total_registros: payload.total_registros || 0,
+        novos_pacientes: 0,
+        pacientes_atualizados: 0,
+        novos_atendimentos: 0,
+        novos_pesos: 0,
+        status: "Processando",
+      })
+      .select("id_carga")
+      .single();
+
+    if (error || !data) {
+      console.warn("Aviso ao criar controle_carga no Supabase:", error?.message);
+      return null;
+    }
+    return data.id_carga;
+  } catch (err) {
+    console.warn("Erro ao registrar controle_carga no Supabase:", err);
+    return null;
+  }
+}
+
+/**
+ * Atualiza o registro de 'controle_carga' com os dados consolidados.
+ */
+export async function updateControleCargaSupabase(
+  id_carga: number,
+  updates: {
+    novos_pacientes?: number;
+    pacientes_atualizados?: number;
+    novos_atendimentos?: number;
+    novos_pesos?: number;
+    status?: string;
+    detalhes?: string;
+  }
+): Promise<boolean> {
+  try {
+    const { error } = await supabase
+      .from("controle_carga")
+      .update(updates)
+      .eq("id_carga", id_carga);
+
+    if (error) {
+      console.warn("Aviso ao atualizar controle_carga no Supabase:", error.message);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn("Erro ao atualizar controle_carga:", err);
+    return false;
+  }
+}
+
+/**
+ * Busca histórico de cargas da tabela 'controle_carga'.
+ */
+export async function getControleCargasSupabase(limitRows: number = 30): Promise<ControleCargaRow[]> {
+  try {
+    const { data, error } = await supabase
+      .from("controle_carga")
+      .select("*")
+      .order("data_hora", { ascending: false })
+      .limit(limitRows);
+
+    if (error || !data) return [];
+    return data as ControleCargaRow[];
+  } catch (err) {
+    console.warn("Erro ao buscar controle_carga:", err);
+    return [];
+  }
+}
+
+/**
+ * Busca áreas cadastradas no banco relacional.
+ */
+export async function getAreasSupabase(): Promise<AreaRow[]> {
+  try {
+    const { data, error } = await supabase
+      .from("area")
+      .select("*")
+      .order("nome", { ascending: true });
+
+    if (error || !data) return [];
+    return data as AreaRow[];
+  } catch (err) {
+    console.warn("Erro ao buscar áreas no Supabase:", err);
+    return [];
+  }
+}
+
+/**
+ * Busca microáreas cadastradas no banco relacional com dados da área pai.
+ */
+export async function getMicroareasSupabase(idArea?: number): Promise<MicroareaRow[]> {
+  try {
+    let q = supabase
+      .from("microarea")
+      .select("*, area:id_area (*)")
+      .order("codigo", { ascending: true });
+
+    if (idArea) {
+      q = q.eq("id_area", idArea);
+    }
+
+    const { data, error } = await q;
+    if (error || !data) return [];
+    return data as MicroareaRow[];
+  } catch (err) {
+    console.warn("Erro ao buscar microáreas no Supabase:", err);
+    return [];
+  }
+}
+
+/**
+ * Busca usuários cadastrados na tabela 'usuario'.
+ */
+export async function getUsuariosSupabase(): Promise<UsuarioRow[]> {
+  try {
+    const { data, error } = await supabase
+      .from("usuario")
+      .select("*")
+      .order("nome", { ascending: true });
+
+    if (error || !data) return [];
+    return data as UsuarioRow[];
+  } catch (err) {
+    console.warn("Erro ao buscar usuários no Supabase:", err);
+    return [];
+  }
+}
+
+/**
+ * Salva ou atualiza uma área.
+ */
+export async function saveAreaSupabase(area: Partial<AreaRow>): Promise<AreaRow | null> {
+  try {
+    const payload = {
+      ...area,
+      updated_at: new Date().toISOString(),
+    };
+    if (area.id_area) {
+      const { data, error } = await supabase
+        .from("area")
+        .update(payload)
+        .eq("id_area", area.id_area)
+        .select()
+        .single();
+      if (error) throw error;
+      return data as AreaRow;
+    } else {
+      const { data, error } = await supabase
+        .from("area")
+        .insert(payload)
+        .select()
+        .single();
+      if (error) throw error;
+      return data as AreaRow;
+    }
+  } catch (err) {
+    console.warn("Erro ao salvar área no Supabase:", err);
+    return null;
+  }
+}
+
+/**
+ * Salva ou atualiza uma microárea.
+ */
+export async function saveMicroareaSupabase(microarea: Partial<MicroareaRow>): Promise<MicroareaRow | null> {
+  try {
+    const payload = {
+      ...microarea,
+      updated_at: new Date().toISOString(),
+    };
+    if (microarea.id_microarea) {
+      const { data, error } = await supabase
+        .from("microarea")
+        .update(payload)
+        .eq("id_microarea", microarea.id_microarea)
+        .select()
+        .single();
+      if (error) throw error;
+      return data as MicroareaRow;
+    } else {
+      const { data, error } = await supabase
+        .from("microarea")
+        .insert(payload)
+        .select()
+        .single();
+      if (error) throw error;
+      return data as MicroareaRow;
+    }
+  } catch (err) {
+    console.warn("Erro ao salvar microárea no Supabase:", err);
+    return null;
+  }
+}
+
+/**
+ * Salva ou atualiza um usuário na tabela 'usuario'.
+ */
+export async function saveUsuarioSupabase(user: Partial<UsuarioRow>): Promise<UsuarioRow | null> {
+  try {
+    const payload = {
+      ...user,
+      updated_at: new Date().toISOString(),
+    };
+    if (user.id_usuario) {
+      const { data, error } = await supabase
+        .from("usuario")
+        .update(payload)
+        .eq("id_usuario", user.id_usuario)
+        .select()
+        .single();
+      if (error) throw error;
+      return data as UsuarioRow;
+    } else {
+      const { data, error } = await supabase
+        .from("usuario")
+        .insert(payload)
+        .select()
+        .single();
+      if (error) throw error;
+      return data as UsuarioRow;
+    }
+  } catch (err) {
+    console.warn("Erro ao salvar usuário no Supabase:", err);
+    return null;
   }
 }

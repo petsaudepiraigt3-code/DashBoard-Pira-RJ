@@ -160,6 +160,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+function createSyntheticUser(profile: ExtendedUserProfile): User {
+  return {
+    uid: profile.uid,
+    email: profile.email,
+    displayName: profile.name,
+    emailVerified: true,
+    isAnonymous: false,
+    metadata: {} as any,
+    providerData: [],
+    refreshToken: "",
+    tenantId: null,
+    delete: async () => {},
+    getIdToken: async () => "dev-token",
+    getIdTokenResult: async () => ({ token: "dev-token" } as any),
+    reload: async () => {},
+    toJSON: () => ({}),
+    phoneNumber: null,
+    photoURL: null,
+    providerId: "password",
+  } as unknown as User;
+}
+
   useEffect(() => {
     // 1. Verificar se existe sessão de desenvolvimento ativa no localStorage
     if (typeof window !== "undefined") {
@@ -172,6 +194,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setRole(parsed.role || "ADMIN");
             setUserUnitId(parsed.unitId || "USF-003");
             setUserUnitNome(parsed.unitName || "USF Arrozal 3");
+            setUser(createSyntheticUser(parsed));
             setLoading(false);
             return;
           }
@@ -212,10 +235,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const loginWithDevCredentials = async (emailInput: string, passwordInput: string): Promise<{ success: boolean; error?: string }> => {
-    const cleanEmail = emailInput.trim().toLowerCase();
+    const cleanEmail = (emailInput || "").trim().toLowerCase();
+    const cleanPassword = (passwordInput || "").trim();
     
     // Credencial do Administrador
-    if (cleanEmail === "admin@dcntsaude.gov.br" && passwordInput === "Admin@123456") {
+    if (cleanEmail === "admin@dcntsaude.gov.br" && cleanPassword === "Admin@123456") {
       const devAdmin: ExtendedUserProfile = {
         uid: "admin-dev-id",
         name: "Administrador Sistema",
@@ -227,7 +251,51 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       };
       localStorage.setItem("dev_auth_logged", JSON.stringify(devAdmin));
       setUserProfile(devAdmin);
+      setUser(createSyntheticUser(devAdmin));
       setRole("ADMIN");
+      setUserUnitId("USF-003");
+      setUserUnitNome("USF Arrozal 3");
+      setUnauthorizedMessage(null);
+      return { success: true };
+    }
+
+    // Credencial do Gerente
+    if (cleanEmail === "gerente.arrozal3@usf.gov.br" && (cleanPassword === "GerentePass123!" || cleanPassword === "Admin@123456")) {
+      const devGerente: ExtendedUserProfile = {
+        uid: "gerente-arrozal-3",
+        name: "Gerente USF Arrozal 3",
+        email: "gerente.arrozal3@usf.gov.br",
+        role: "GERENTE",
+        unitId: "USF-003",
+        unitName: "USF Arrozal 3",
+        ativo: true,
+      };
+      localStorage.setItem("dev_auth_logged", JSON.stringify(devGerente));
+      setUserProfile(devGerente);
+      setUser(createSyntheticUser(devGerente));
+      setRole("GERENTE");
+      setUserUnitId("USF-003");
+      setUserUnitNome("USF Arrozal 3");
+      setUnauthorizedMessage(null);
+      return { success: true };
+    }
+
+    // Credencial de ACS
+    if (cleanEmail === "ana.souza@usf.gov.br" && (cleanPassword === "AcsPass123!" || cleanPassword === "Admin@123456")) {
+      const devACS: ExtendedUserProfile = {
+        uid: "acs-ana-souza",
+        name: "Ana Maria Souza",
+        email: "ana.souza@usf.gov.br",
+        role: "ACS",
+        unitId: "USF-003",
+        unitName: "USF Arrozal 3",
+        assignedMicroareaCodes: ["01"],
+        ativo: true,
+      };
+      localStorage.setItem("dev_auth_logged", JSON.stringify(devACS));
+      setUserProfile(devACS);
+      setUser(createSyntheticUser(devACS));
+      setRole("ACS");
       setUserUnitId("USF-003");
       setUserUnitNome("USF Arrozal 3");
       setUnauthorizedMessage(null);

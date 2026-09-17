@@ -312,30 +312,10 @@ export default function ImportarPage() {
     setFivePatientsError(null);
   };
 
-  const activeUnitObj = units.find((u) => u.id === (role === "GERENTE" ? userUnitId : selectedUnitId));
-  const activeUnitNameDisplay = role === "GERENTE" ? (userUnitNome || activeUnitObj?.nome || "USF Arrozal 3") : (activeUnitObj?.nome || "USF Selecionada");
-
-  if (role === "ACS" || userProfile?.role === "ACS") {
-    return (
-      <AppLayout pageTitle="Importar Relatório e-SUS APS">
-        <div className="flex flex-col items-center justify-center py-16 text-center space-y-4">
-          <div className="rounded-full bg-amber-100 p-4 text-amber-700 dark:bg-amber-950 dark:text-amber-300">
-            <Lock className="h-10 w-10" />
-          </div>
-          <h2 className="text-lg font-bold text-zinc-900 dark:text-zinc-100">Acesso Não Autorizado</h2>
-          <p className="max-w-md text-xs text-zinc-500">
-            A importação de dados do e-SUS APS é reservada a Gerentes de Unidade e Administradores do sistema.
-          </p>
-          <button
-            onClick={() => router.push("/dashboard")}
-            className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-bold text-white shadow-2xs hover:bg-blue-700 cursor-pointer"
-          >
-            Voltar ao Dashboard
-          </button>
-        </div>
-      </AppLayout>
-    );
-  }
+  const activeUnitObj = units.find((u) => u.id === (role === "GERENTE" || role === "ACS" ? userUnitId : selectedUnitId));
+  const activeUnitNameDisplay = (role === "GERENTE" || role === "ACS")
+    ? (userUnitNome || activeUnitObj?.nome || "USF Arrozal 3")
+    : (activeUnitObj?.nome || "USF Selecionada");
 
   return (
     <AppLayout pageTitle="Importar Relatório e-SUS APS">
@@ -569,21 +549,29 @@ export default function ImportarPage() {
                 </table>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-                <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-purple-100 flex justify-between">
-                  <span>Documentos Paciente:</span>
-                  <span className="font-extrabold text-emerald-600">{fivePatientsResult.patientDocStatus}</span>
+              <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 text-xs">
+                <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-purple-100 dark:border-zinc-800 flex justify-between">
+                  <span>Novos Pacientes:</span>
+                  <span className="font-extrabold text-blue-600">{fivePatientsResult.newPatients}</span>
                 </div>
-                <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-purple-100 flex justify-between">
-                  <span>Vínculos Unidade:</span>
-                  <span className="font-extrabold text-emerald-600">{fivePatientsResult.linksStatus}</span>
+                <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-purple-100 dark:border-zinc-800 flex justify-between">
+                  <span>Atualizados:</span>
+                  <span className="font-extrabold text-zinc-700 dark:text-zinc-300">{fivePatientsResult.updatedPatients}</span>
                 </div>
-                <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-purple-100 flex justify-between">
-                  <span>Microáreas da Unidade:</span>
-                  <span className="font-extrabold text-emerald-600">{fivePatientsResult.microareasStatus}</span>
+                <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-purple-100 dark:border-zinc-800 flex justify-between">
+                  <span>Novos Atendimentos:</span>
+                  <span className="font-extrabold text-emerald-600">+{fivePatientsResult.novosAtendimentos ?? 0}</span>
                 </div>
-                <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-purple-100 flex justify-between">
-                  <span>Registro Importação:</span>
+                <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-purple-100 dark:border-zinc-800 flex justify-between">
+                  <span>Novos Pesos:</span>
+                  <span className="font-extrabold text-purple-600">+{fivePatientsResult.novosPesos ?? 0}</span>
+                </div>
+                <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-purple-100 dark:border-zinc-800 flex justify-between">
+                  <span>PA Aferidas:</span>
+                  <span className="font-extrabold text-indigo-600">{fivePatientsResult.paCount}</span>
+                </div>
+                <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-purple-100 dark:border-zinc-800 flex justify-between">
+                  <span>Controle Carga:</span>
                   <span className="font-extrabold text-emerald-600">{fivePatientsResult.importDocStatus}</span>
                 </div>
               </div>
@@ -852,9 +840,20 @@ export default function ImportarPage() {
               <span className="text-zinc-500 block font-semibold">Vínculos Atualizados:</span>
               <span className="text-lg font-extrabold text-blue-600">{importStats.vinculosAtualizados}</span>
             </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 text-xs font-medium">
+            <div className="p-3 rounded-lg bg-white dark:bg-zinc-900 border border-emerald-200/60 dark:border-emerald-900/40">
+              <span className="text-zinc-500 block font-semibold">Novos Atendimentos no Banco:</span>
+              <span className="text-lg font-extrabold text-emerald-600">+{importProgress?.novosAtendimentos ?? 0}</span>
+            </div>
+            <div className="p-3 rounded-lg bg-white dark:bg-zinc-900 border border-emerald-200/60 dark:border-emerald-900/40">
+              <span className="text-zinc-500 block font-semibold">Novos Pesos Registrados:</span>
+              <span className="text-lg font-extrabold text-purple-600">+{importProgress?.novosPesos ?? 0}</span>
+            </div>
             <div className="p-3 rounded-lg bg-white dark:bg-zinc-900 border border-emerald-200/60 dark:border-emerald-900/40">
               <span className="text-zinc-500 block font-semibold">PA Adicionadas:</span>
-              <span className="text-lg font-extrabold text-purple-600">{importStats.paCount}</span>
+              <span className="text-lg font-extrabold text-indigo-600">{importStats.paCount}</span>
             </div>
             <div className="p-3 rounded-lg bg-white dark:bg-zinc-900 border border-emerald-200/60 dark:border-emerald-900/40">
               <span className="text-zinc-500 block font-semibold">Antropometrias:</span>
