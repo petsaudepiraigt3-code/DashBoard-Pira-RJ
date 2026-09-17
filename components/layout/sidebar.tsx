@@ -119,7 +119,7 @@ export function Sidebar({
           {navItems
             .filter((item) => {
               if (userProfile?.role === "ACS") {
-                if (item.href === "/importar" || item.href === "/configuracoes") return false;
+                if (item.href === "/configuracoes") return false;
               }
               return true;
             })

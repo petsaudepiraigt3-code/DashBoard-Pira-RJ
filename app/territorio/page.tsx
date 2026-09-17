@@ -2,8 +2,9 @@
 
 import React, { useState, useEffect } from "react";
 import { AppLayout } from "@/components/layout/app-layout";
-import { MOCK_PATIENTS } from "@/data/mock-data";
+import { MOCK_PATIENTS, MOCK_MICROAREAS } from "@/data/mock-data";
 import { getAllPatientsFromFirestore } from "@/lib/firebase/patients";
+import { getAllPatientsFromSupabase } from "@/lib/supabase/patients";
 import { MicroareaStats, Patient } from "@/types/dcnt";
 import { Modal } from "@/components/ui/modal";
 import { BarChartSVG } from "@/components/ui/charts";
@@ -13,42 +14,44 @@ import { useAuth } from "@/context/auth-context";
 export default function TerritorioPage() {
   const { role, userUnitId, userProfile } = useAuth();
 
-  const [patients, setPatients] = useState<Patient[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [patients, setPatients] = useState<Patient[]>(MOCK_PATIENTS);
+  const [loading, setLoading] = useState(false);
   const [selectedMicroarea, setSelectedMicroarea] = useState<MicroareaStats | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   const loadData = async () => {
     setLoading(true);
-    const realData = await getAllPatientsFromFirestore({
-      role,
-      userUnitId,
-      assignedMicroareaCodes: userProfile?.assignedMicroareaCodes,
-      acsName: role === "ACS" ? userProfile?.name : undefined,
-      acsId: role === "ACS" ? userProfile?.uid : undefined,
-    });
-    if (realData && realData.length > 0) {
-      setPatients(realData);
-    } else {
-      const filteredMock = MOCK_PATIENTS.filter((p: any) => {
-        if (role === "GERENTE" && userUnitId) {
-          const pUnitId = p.unidadeId || "USF-003";
-          if (pUnitId !== userUnitId) return false;
-        }
-        if (role === "ACS") {
-          if (userUnitId) {
-            const pUnitId = p.unidadeId || "USF-003";
-            if (pUnitId !== userUnitId) return false;
-          }
-          const acsCodes = userProfile?.assignedMicroareaCodes || ["56"];
-          const patMACode = (p.microarea || "").replace(/\D/g, "").trim();
-          if (acsCodes.length > 0 && !acsCodes.includes(patMACode)) return false;
-        }
-        return true;
-      });
-      setPatients(filteredMock);
+    try {
+      const supabaseData = await getAllPatientsFromSupabase();
+      if (supabaseData && supabaseData.length > 0) {
+        setPatients(supabaseData);
+        setLoading(false);
+        return;
+      }
+    } catch (err) {
+      console.warn("Aviso ao carregar do Supabase, tentando Firestore:", err);
     }
-    setLoading(false);
+
+    try {
+      const realData = await getAllPatientsFromFirestore({
+        role,
+        userUnitId,
+        assignedMicroareaCodes: userProfile?.assignedMicroareaCodes,
+        acsName: role === "ACS" ? userProfile?.name : undefined,
+        acsId: role === "ACS" ? userProfile?.uid : undefined,
+      });
+
+      if (realData && realData.length > 0) {
+        setPatients(realData);
+      } else {
+        setPatients(MOCK_PATIENTS);
+      }
+    } catch (e) {
+      console.warn("Aviso ao carregar pacientes do território:", e);
+      setPatients(MOCK_PATIENTS);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -85,7 +88,7 @@ export default function TerritorioPage() {
     });
   }
 
-  const computedMicroareas: MicroareaStats[] = Array.from(microareaMap.values()).map((item) => {
+  let finalMicroareas: MicroareaStats[] = Array.from(microareaMap.values()).map((item) => {
     const pList = item.patients;
     return {
       id: `ma-${item.code}`,
@@ -102,10 +105,14 @@ export default function TerritorioPage() {
     };
   });
 
-  computedMicroareas.sort((a, b) => parseInt(a.code || "0", 10) - parseInt(b.code || "0", 10));
+  if (finalMicroareas.length === 0) {
+    finalMicroareas = MOCK_MICROAREAS;
+  }
+
+  finalMicroareas.sort((a, b) => parseInt(a.code || "0", 10) - parseInt(b.code || "0", 10));
 
   // Dados para o gráfico comparativo
-  const chartData = computedMicroareas.map((m) => ({
+  const chartData = finalMicroareas.map((m) => ({
     label: `MA ${m.code} (${(m.acsName || "ACS").split(" ")[0]})`,
     value: m.activeSearchCount,
     color: "bg-blue-600 dark:bg-blue-500",
@@ -126,7 +133,7 @@ export default function TerritorioPage() {
       {/* Indicador de Atualização */}
       <div className="flex items-center justify-between text-xs text-zinc-500 font-medium">
         <span>
-          Fonte de Dados: {loading ? "Carregando..." : `Exibindo ${computedMicroareas.length} microárea(s) do escopo (${patients.length} pacientes)`}
+          Fonte de Dados: {loading ? "Carregando..." : `Exibindo ${finalMicroareas.length} microárea(s) do escopo (${patients.length} pacientes)`}
         </span>
         <button
           onClick={loadData}
@@ -150,7 +157,7 @@ export default function TerritorioPage() {
 
       {/* Grid de Cards das Microáreas */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {computedMicroareas.map((m) => (
+        {finalMicroareas.map((m) => (
           <div
             key={m.id}
             onClick={() => handleOpenDetails(m)}
@@ -209,7 +216,7 @@ export default function TerritorioPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800 font-medium">
-              {computedMicroareas.map((m) => (
+              {finalMicroareas.map((m) => (
                 <tr
                   key={m.id}
                   onClick={() => handleOpenDetails(m)}

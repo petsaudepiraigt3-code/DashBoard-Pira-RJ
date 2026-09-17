@@ -260,11 +260,14 @@ function createSyntheticUser(profile: ExtendedUserProfile): User {
     }
 
     // Credencial do Gerente
-    if (cleanEmail === "gerente.arrozal3@usf.gov.br" && (cleanPassword === "GerentePass123!" || cleanPassword === "Admin@123456")) {
+    if (
+      (cleanEmail === "gerente@dcntsaude.gov.br" || cleanEmail === "gerente.arrozal3@usf.gov.br") &&
+      (cleanPassword === "Admin@123456" || cleanPassword === "GerentePass123!")
+    ) {
       const devGerente: ExtendedUserProfile = {
         uid: "gerente-arrozal-3",
         name: "Gerente USF Arrozal 3",
-        email: "gerente.arrozal3@usf.gov.br",
+        email: cleanEmail,
         role: "GERENTE",
         unitId: "USF-003",
         unitName: "USF Arrozal 3",
@@ -281,15 +284,18 @@ function createSyntheticUser(profile: ExtendedUserProfile): User {
     }
 
     // Credencial de ACS
-    if (cleanEmail === "ana.souza@usf.gov.br" && (cleanPassword === "AcsPass123!" || cleanPassword === "Admin@123456")) {
+    if (
+      (cleanEmail === "acs@dcntsaude.gov.br" || cleanEmail === "ana.souza@usf.gov.br") &&
+      (cleanPassword === "Admin@123456" || cleanPassword === "AcsPass123!")
+    ) {
       const devACS: ExtendedUserProfile = {
         uid: "acs-ana-souza",
-        name: "Ana Maria Souza",
-        email: "ana.souza@usf.gov.br",
+        name: "Ana Maria Souza (ACS)",
+        email: cleanEmail,
         role: "ACS",
         unitId: "USF-003",
         unitName: "USF Arrozal 3",
-        assignedMicroareaCodes: ["01"],
+        assignedMicroareaCodes: ["56", "01"],
         ativo: true,
       };
       localStorage.setItem("dev_auth_logged", JSON.stringify(devACS));

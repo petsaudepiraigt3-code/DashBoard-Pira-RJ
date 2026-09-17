@@ -25,6 +25,9 @@ import { calculateAdminPriorityScore } from "../utils/priority";
 export async function getAllPatientsFromSupabase(options?: {
   microareaFilter?: number;
 }): Promise<Patient[]> {
+  if (!isSupabaseConfigured) {
+    return [];
+  }
   try {
     let query = supabase
       .from("paciente")
@@ -544,6 +547,7 @@ export async function updateControleCargaSupabase(
  * Busca histórico de cargas da tabela 'controle_carga'.
  */
 export async function getControleCargasSupabase(limitRows: number = 30): Promise<ControleCargaRow[]> {
+  if (!isSupabaseConfigured) return [];
   try {
     const { data, error } = await supabase
       .from("controle_carga")
@@ -563,6 +567,7 @@ export async function getControleCargasSupabase(limitRows: number = 30): Promise
  * Busca áreas cadastradas no banco relacional.
  */
 export async function getAreasSupabase(): Promise<AreaRow[]> {
+  if (!isSupabaseConfigured) return [];
   try {
     const { data, error } = await supabase
       .from("area")
@@ -581,6 +586,7 @@ export async function getAreasSupabase(): Promise<AreaRow[]> {
  * Busca microáreas cadastradas no banco relacional com dados da área pai.
  */
 export async function getMicroareasSupabase(idArea?: number): Promise<MicroareaRow[]> {
+  if (!isSupabaseConfigured) return [];
   try {
     let q = supabase
       .from("microarea")
@@ -604,6 +610,7 @@ export async function getMicroareasSupabase(idArea?: number): Promise<MicroareaR
  * Busca usuários cadastrados na tabela 'usuario'.
  */
 export async function getUsuariosSupabase(): Promise<UsuarioRow[]> {
+  if (!isSupabaseConfigured) return [];
   try {
     const { data, error } = await supabase
       .from("usuario")
