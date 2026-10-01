@@ -1,5 +1,6 @@
 import {
   supabase,
+  isSupabaseConfigured,
   PacienteRow,
   AtendimentoRow,
   AfericaoPressaoRow,
