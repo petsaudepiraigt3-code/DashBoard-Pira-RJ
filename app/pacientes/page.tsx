@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, Suspense } from "react";
+import React, { useState, useEffect, useMemo, Suspense } from "react";
 import { AppLayout } from "@/components/layout/app-layout";
 import { MOCK_PATIENTS } from "@/data/mock-data";
 import { getAllPatientsFromFirestore } from "@/lib/firebase/patients";
@@ -8,7 +8,18 @@ import { getAllPatientsFromSupabase } from "@/lib/supabase/patients";
 import { Patient } from "@/types/dcnt";
 import { BadgePriority } from "@/components/ui/badge-priority";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Search, Eye, RefreshCw, X, AlertTriangle, Filter } from "lucide-react";
+import {
+  Search,
+  Eye,
+  RefreshCw,
+  X,
+  AlertTriangle,
+  Filter,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+} from "lucide-react";
 import { useAuth } from "@/context/auth-context";
 import { formatDateBR } from "@/lib/utils/formatters";
 import {
@@ -47,6 +58,15 @@ function PacientesContent() {
   const [filterACS, setFilterACS] = useState(paramACS || "Todos");
   const [filterMicroarea, setFilterMicroarea] = useState(paramMicroarea || "Todas");
   const [filterSex, setFilterSex] = useState("Todos");
+
+  // Estado de Paginação
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+
+  // Reiniciar para página 1 sempre que os filtros mudarem
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, filterACS, filterMicroarea, filterSex, activeFilter]);
 
   // Sincronizar parâmetros de URL com os filtros locais de ACS/Microárea
   useEffect(() => {
@@ -151,6 +171,13 @@ function PacientesContent() {
 
     return true;
   });
+
+  // Cálculo de Paginação
+  const totalPages = Math.ceil(filteredPatients.length / pageSize) || 1;
+  const paginatedPatients = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredPatients.slice(start, start + pageSize);
+  }, [filteredPatients, currentPage, pageSize]);
 
   const clearActiveFilter = () => {
     router.push("/pacientes");
@@ -263,53 +290,139 @@ function PacientesContent() {
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800 font-medium">
-              {filteredPatients.map((p) => (
-                <tr
-                  key={p.id}
-                  onClick={() => router.push(`/pacientes/${p.id}`)}
-                  className="hover:bg-zinc-50 dark:hover:bg-zinc-800/40 cursor-pointer transition-colors"
-                >
-                  <td className="px-4 py-3">
-                    <div className="font-bold text-zinc-900 dark:text-zinc-100">{p.name}</div>
-                    <div className="text-[11px] text-zinc-500">
-                      {p.cpf !== "Sem CPF" ? `CPF: ${p.cpf}` : p.cns !== "Sem CNS" ? `CNS: ${p.cns}` : "Sem documento"}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 text-zinc-700 dark:text-zinc-300">
-                    {p.age} anos ({p.sex.substring(0, 1)})
-                  </td>
-                  <td className="px-4 py-3 text-zinc-700 dark:text-zinc-300">
-                    <div className="font-semibold">{p.microarea}</div>
-                    <div className="text-[11px] text-zinc-500">{p.acsName}</div>
-                  </td>
-                  <td className="px-4 py-3 font-bold text-zinc-900 dark:text-zinc-100">
-                    {p.lastPA ? `${p.lastPA.systolic}/${p.lastPA.diastolic} mmHg` : "Sem registro"}
-                  </td>
-                  <td className="px-4 py-3 text-zinc-700 dark:text-zinc-300">
-                    {p.lastWeight ? `${p.lastWeight.imc.toFixed(1)} (${p.isObese ? "Obeso" : p.isOverweight ? "Sobrepeso" : "Adequado"})` : "N/A"}
-                  </td>
-                  <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">
-                    {formatDateBR(p.lastVisitDate)}
-                  </td>
-                  <td className="px-4 py-3">
-                    <BadgePriority priority={p.priority} />
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        router.push(`/pacientes/${p.id}`);
-                      }}
-                      className="inline-flex items-center gap-1 rounded-lg bg-zinc-100 px-2.5 py-1 text-xs font-semibold text-zinc-800 hover:bg-blue-50 hover:text-blue-600 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-blue-950 dark:hover:text-blue-300 transition-colors cursor-pointer"
-                    >
-                      <Eye className="h-3.5 w-3.5" />
-                      <span>Ver Prontuário</span>
-                    </button>
+              {paginatedPatients.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="px-4 py-8 text-center text-xs text-zinc-500">
+                    Nenhum paciente encontrado para os filtros selecionados.
                   </td>
                 </tr>
-              ))}
+              ) : (
+                paginatedPatients.map((p) => (
+                  <tr
+                    key={p.id}
+                    onClick={() => router.push(`/pacientes/${p.id}`)}
+                    className="hover:bg-zinc-50 dark:hover:bg-zinc-800/40 cursor-pointer transition-colors"
+                  >
+                    <td className="px-4 py-3">
+                      <div className="font-bold text-zinc-900 dark:text-zinc-100">{p.name}</div>
+                      <div className="text-[11px] text-zinc-500">
+                        {p.cpf !== "Sem CPF" ? `CPF: ${p.cpf}` : p.cns !== "Sem CNS" ? `CNS: ${p.cns}` : "Sem documento"}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-zinc-700 dark:text-zinc-300">
+                      {p.age} anos ({p.sex.substring(0, 1)})
+                    </td>
+                    <td className="px-4 py-3 text-zinc-700 dark:text-zinc-300">
+                      <div className="font-semibold">{p.microarea}</div>
+                      <div className="text-[11px] text-zinc-500">{p.acsName}</div>
+                    </td>
+                    <td className="px-4 py-3 font-bold text-zinc-900 dark:text-zinc-100">
+                      {p.lastPA ? `${p.lastPA.systolic}/${p.lastPA.diastolic} mmHg` : "Sem registro"}
+                    </td>
+                    <td className="px-4 py-3 text-zinc-700 dark:text-zinc-300">
+                      {p.lastWeight ? `${p.lastWeight.imc.toFixed(1)} (${p.isObese ? "Obeso" : p.isOverweight ? "Sobrepeso" : "Adequado"})` : "N/A"}
+                    </td>
+                    <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">
+                      {formatDateBR(p.lastVisitDate)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <BadgePriority priority={p.priority} />
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          router.push(`/pacientes/${p.id}`);
+                        }}
+                        className="inline-flex items-center gap-1 rounded-lg bg-zinc-100 px-2.5 py-1 text-xs font-semibold text-zinc-800 hover:bg-blue-50 hover:text-blue-600 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-blue-950 dark:hover:text-blue-300 transition-colors cursor-pointer"
+                      >
+                        <Eye className="h-3.5 w-3.5" />
+                        <span>Ver Prontuário</span>
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
+        </div>
+
+        {/* Barra de Controles de Paginação */}
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 border-t border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900 text-xs">
+          <div className="flex flex-wrap items-center gap-3 text-zinc-500 dark:text-zinc-400">
+            <span>
+              Mostrando{" "}
+              <strong className="text-zinc-800 dark:text-zinc-200">
+                {filteredPatients.length === 0 ? 0 : (currentPage - 1) * pageSize + 1}
+              </strong>{" "}
+              a{" "}
+              <strong className="text-zinc-800 dark:text-zinc-200">
+                {Math.min(currentPage * pageSize, filteredPatients.length)}
+              </strong>{" "}
+              de{" "}
+              <strong className="text-zinc-800 dark:text-zinc-200">
+                {filteredPatients.length}
+              </strong>{" "}
+              pacientes
+            </span>
+
+            <div className="flex items-center gap-1.5">
+              <span>Por página:</span>
+              <select
+                value={pageSize}
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value));
+                  setCurrentPage(1);
+                }}
+                className="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-800 shadow-2xs dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 focus:outline-none cursor-pointer"
+              >
+                <option value={10}>10</option>
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setCurrentPage(1)}
+              disabled={currentPage <= 1}
+              className="rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 disabled:opacity-30 disabled:pointer-events-none dark:hover:bg-zinc-800 dark:text-zinc-400 transition-colors cursor-pointer"
+              title="Primeira página"
+            >
+              <ChevronsLeft className="h-4 w-4" />
+            </button>
+            <button
+              onClick={() => setCurrentPage((p) => Math.max(p - 1, 1))}
+              disabled={currentPage <= 1}
+              className="rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 disabled:opacity-30 disabled:pointer-events-none dark:hover:bg-zinc-800 dark:text-zinc-400 transition-colors cursor-pointer"
+              title="Página anterior"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+
+            <span className="px-3 py-1 font-semibold text-zinc-700 dark:text-zinc-300">
+              Página {currentPage} de {totalPages}
+            </span>
+
+            <button
+              onClick={() => setCurrentPage((p) => Math.min(p + 1, totalPages))}
+              disabled={currentPage >= totalPages}
+              className="rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 disabled:opacity-30 disabled:pointer-events-none dark:hover:bg-zinc-800 dark:text-zinc-400 transition-colors cursor-pointer"
+              title="Próxima página"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+            <button
+              onClick={() => setCurrentPage(totalPages)}
+              disabled={currentPage >= totalPages}
+              className="rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 disabled:opacity-30 disabled:pointer-events-none dark:hover:bg-zinc-800 dark:text-zinc-400 transition-colors cursor-pointer"
+              title="Última página"
+            >
+              <ChevronsRight className="h-4 w-4" />
+            </button>
+          </div>
         </div>
       </div>
     </AppLayout>

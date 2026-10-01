@@ -17,6 +17,7 @@ import {
   ChevronRight,
   HeartPulse,
   UserCheck,
+  MessageSquareText,
 } from "lucide-react";
 import { UserRole } from "@/types/dcnt";
 
@@ -25,6 +26,7 @@ const navItems = [
   { label: "Busca Ativa", href: "/busca-ativa", icon: Search },
   { label: "Território", href: "/territorio", icon: MapPin },
   { label: "Pacientes", href: "/pacientes", icon: Users },
+  { label: "Mensagens WhatsApp", href: "/mensagens", icon: MessageSquareText },
   { label: "Indicadores", href: "/indicadores", icon: BarChart3 },
   { label: "Importar e-SUS", href: "/importar", icon: FileSpreadsheet },
   { label: "Configurações", href: "/configuracoes", icon: Settings },
