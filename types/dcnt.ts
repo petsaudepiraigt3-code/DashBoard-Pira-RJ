@@ -90,13 +90,29 @@ export interface Patient {
   name: string;
   cpf: string;
   cns: string;
+  birthDate?: string;
   age: number;
   sex: "Masculino" | "Feminino";
+  genderIdentity?: string;
+  raceColor?: string;
+  bolsaFamilia?: boolean;
+  bolsaFamiliaValidity?: string;
   phone: string;
+  phoneCell?: string;
+  phoneHome?: string;
+  phoneContact?: string;
+  street?: string;
+  number?: string;
+  complement?: string;
+  neighborhood?: string;
+  city?: string;
+  state?: string;
+  zipCode?: string;
   unit: string;
   unidadeId?: string;
   unidadeNome?: string;
   microarea: string; // ex: "Microárea 01"
+  microareaCodigo?: string;
   acsName: string;
   
   // Condições e Fatores de Risco
@@ -113,6 +129,16 @@ export interface Patient {
   lastWeight?: WeightMeasurement;
   lastVisitDate: string; // ISO date
   lastMedicalApptDate: string;
+  lastNursingApptDate?: string;
+  lastDentalApptDate?: string;
+  daysSinceMedicalCare?: number | null;
+  monthsSinceMedicalCare?: number | null;
+  daysSinceNursingCare?: number | null;
+  monthsSinceNursingCare?: number | null;
+  daysSinceDentalCare?: number | null;
+  monthsSinceDentalCare?: number | null;
+  daysSinceHomeVisit?: number | null;
+  monthsSinceHomeVisit?: number | null;
   
   // Status de Busca Ativa
   priority: PriorityLevel;
@@ -193,13 +219,23 @@ export interface ImportHistoryItem {
 export interface DcntParameters {
   monthsWithoutPA: number;
   monthsWithoutVisit: number;
+  monthsWithoutMedicalCare?: number;
   elderlyAgeCutoff: number;
   obesityImcCutoff: number;
   overweightImcCutoff: number;
+  systolicAlteradaCutoff?: number;
+  diastolicAlteradaCutoff?: number;
   priorityWeights: {
     alteredPA: number;
+    outdatedPA?: number;
     outdatedVisit: number;
     elderly: number;
+    obesity?: number;
     multipleConditions: number;
+  };
+  priorityCutoffs?: {
+    high: number;
+    medium: number;
+    attention: number;
   };
 }

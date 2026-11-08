@@ -1,43 +1,80 @@
-import { Patient } from "@/types/dcnt";
+import { Patient, DcntParameters } from "@/types/dcnt";
+import { DEFAULT_DCNT_PARAMETERS } from "@/lib/store/parameters";
+import { monthsSinceDate } from "@/lib/utils/priority";
 
 /**
  * Regras centralizadas de filtragem de pacientes para corresponder
  * exatamente aos indicadores calculados no Dashboard do DCNT Saúde.
  */
 
-export function isIdoso(patient: Patient): boolean {
-  return patient.isElderly || (patient.age || 0) >= 60;
+export function isIdoso(
+  patient: Patient,
+  params: DcntParameters = DEFAULT_DCNT_PARAMETERS
+): boolean {
+  const cutoff = params.elderlyAgeCutoff ?? 60;
+  return patient.isElderly || (patient.age || 0) >= cutoff;
 }
 
-export function isSobrepeso(patient: Patient): boolean {
+export function isSobrepeso(
+  patient: Patient,
+  params: DcntParameters = DEFAULT_DCNT_PARAMETERS
+): boolean {
+  const overweightCutoff = params.overweightImcCutoff ?? 25;
+  const obesityCutoff = params.obesityImcCutoff ?? 30;
   const imc = patient.lastWeight?.imc ?? (patient as any).imcAtual;
   if (imc != null && typeof imc === "number" && !isNaN(imc) && imc > 0) {
-    return imc >= 25 && imc < 30;
+    return imc >= overweightCutoff && imc < obesityCutoff;
   }
   return !!patient.isOverweight;
 }
 
-export function isObesidade(patient: Patient): boolean {
+export function isObesidade(
+  patient: Patient,
+  params: DcntParameters = DEFAULT_DCNT_PARAMETERS
+): boolean {
+  const obesityCutoff = params.obesityImcCutoff ?? 30;
   const imc = patient.lastWeight?.imc ?? (patient as any).imcAtual;
   if (imc != null && typeof imc === "number" && !isNaN(imc) && imc > 0) {
-    return imc >= 30;
+    return imc >= obesityCutoff;
   }
   return !!patient.isObese;
 }
 
-export function isPAAlterada(patient: Patient): boolean {
+export function isPAAlterada(
+  patient: Patient,
+  params: DcntParameters = DEFAULT_DCNT_PARAMETERS
+): boolean {
   if (!patient.lastPA) return false;
-  return patient.lastPA.systolic >= 140 || patient.lastPA.diastolic >= 90;
+  const sysCutoff = params.systolicAlteradaCutoff ?? 140;
+  const diaCutoff = params.diastolicAlteradaCutoff ?? 90;
+  return patient.lastPA.systolic >= sysCutoff || patient.lastPA.diastolic >= diaCutoff;
 }
 
-export function isSemPARecente(patient: Patient): boolean {
-  if (!patient.lastPA) return true;
-  return new Date(patient.lastPA.date) < new Date("2026-01-01");
+export function isSemPARecente(
+  patient: Patient,
+  params: DcntParameters = DEFAULT_DCNT_PARAMETERS
+): boolean {
+  if (!patient.lastPA || !patient.lastPA.date) return true;
+  const maxMonths = params.monthsWithoutPA ?? 6;
+  return monthsSinceDate(patient.lastPA.date) > maxMonths;
 }
 
-export function isSemVisitaACS(patient: Patient): boolean {
+export function isSemVisitaACS(
+  patient: Patient,
+  params: DcntParameters = DEFAULT_DCNT_PARAMETERS
+): boolean {
   if (!patient.lastVisitDate) return true;
-  return new Date(patient.lastVisitDate) < new Date("2026-04-01");
+  const maxMonths = params.monthsWithoutVisit ?? 3;
+  return monthsSinceDate(patient.lastVisitDate) > maxMonths;
+}
+
+export function isSemConsultaMedicaRecente(
+  patient: Patient,
+  params: DcntParameters = DEFAULT_DCNT_PARAMETERS
+): boolean {
+  if (!patient.lastMedicalApptDate) return true;
+  const maxMonths = params.monthsWithoutMedicalCare ?? 6;
+  return monthsSinceDate(patient.lastMedicalApptDate) > maxMonths;
 }
 
 export function isBuscaAtivaPrioritaria(patient: Patient): boolean {

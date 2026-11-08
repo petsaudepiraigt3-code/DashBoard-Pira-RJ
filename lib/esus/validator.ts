@@ -18,12 +18,46 @@ import {
   calculateBMI,
   parseBloodPressure,
   normalizeName,
+  cleanESUSString,
+  parseBooleanESUS,
+  parseESUSAge,
 } from "./normalizer";
 import { calculateAdminPriorityScore, monthsSinceDate } from "@/lib/utils/priority";
+import { DcntParameters } from "@/types/dcnt";
+import { DEFAULT_DCNT_PARAMETERS } from "@/lib/store/parameters";
+
+function parseESUSInt(val?: string | number | null): number | undefined {
+  if (val === undefined || val === null) return undefined;
+  const str = String(val).trim();
+  if (!str || str === "-" || str.toLowerCase() === "não informado") return undefined;
+  const parsed = parseInt(str, 10);
+  return isNaN(parsed) || parsed < 0 ? undefined : parsed;
+}
+
+function deriveCareDate(
+  explicitDateStr?: string,
+  daysSince?: number,
+  monthsSince?: number
+): string | undefined {
+  const iso = parseBRDate(explicitDateStr);
+  if (iso) return iso;
+  if (daysSince !== undefined && !isNaN(daysSince) && daysSince >= 0) {
+    const refDate = new Date();
+    refDate.setDate(refDate.getDate() - daysSince);
+    return refDate.toISOString().substring(0, 10);
+  }
+  if (monthsSince !== undefined && !isNaN(monthsSince) && monthsSince >= 0) {
+    const refDate = new Date();
+    refDate.setDate(refDate.getDate() - monthsSince * 30);
+    return refDate.toISOString().substring(0, 10);
+  }
+  return undefined;
+}
 
 export function validateAndNormalizeESUSData(
   parsedFile: ESUSParsedFile,
-  existingPatientsMap: Map<string, any>
+  existingPatientsMap: Map<string, any>,
+  params: DcntParameters = DEFAULT_DCNT_PARAMETERS
 ): ESUSParseResult {
   const rowValidations: ESUSRowValidation[] = [];
   let validCount = 0;
@@ -150,7 +184,8 @@ export function validateAndNormalizeESUSData(
     }
 
     const birthDateIso = parseBRDate(fields.dataNascimento);
-    let ageVal = typeof fields.idade === "number" ? fields.idade : parseInt(String(fields.idade || ""), 10);
+    const parsedAge = parseESUSAge(fields.idade);
+    let ageVal = parsedAge !== null ? parsedAge : NaN;
 
     if (isNaN(ageVal) || ageVal < 0) {
       if (birthDateIso) {
@@ -174,7 +209,19 @@ export function validateAndNormalizeESUSData(
       }
     }
 
-    const phoneObj = normalizePhone(fields.telefone);
+    const phoneCelularObj = normalizePhone(fields.telefoneCelular);
+    const phoneGeralObj = normalizePhone(fields.telefone);
+    const phoneContatoObj = normalizePhone(fields.telefoneContato);
+    const phoneResidencialObj = normalizePhone(fields.telefoneResidencial);
+
+    // Prioridade: Celular -> Telefone Geral -> Contato -> Residencial
+    const phoneObj = phoneCelularObj.normalized
+      ? phoneCelularObj
+      : phoneGeralObj.normalized
+      ? phoneGeralObj
+      : phoneContatoObj.normalized
+      ? phoneContatoObj
+      : phoneResidencialObj;
 
     const pesoVal = parseWeight(fields.peso);
     const alturaVal = parseHeight(fields.altura);
@@ -190,11 +237,11 @@ export function validateAndNormalizeESUSData(
       if (!alturaVal) warningBreakdown.semAltura++;
     }
 
-    if (fields.peso && !pesoVal) {
+    if (cleanESUSString(fields.peso) && !pesoVal) {
       warnings.push(`Valor de peso informado (${fields.peso}) é inválido.`);
     }
 
-    if (fields.altura && !alturaVal) {
+    if (cleanESUSString(fields.altura) && !alturaVal) {
       warnings.push(`Valor de altura informado (${fields.altura}) é inválido.`);
     }
 
@@ -209,45 +256,45 @@ export function validateAndNormalizeESUSData(
       warningBreakdown.semPA++;
     }
 
-    if (fields.pressaoArterial && !paObj) {
+    if (cleanESUSString(fields.pressaoArterial) && !paObj) {
       warnings.push(`Formato de Pressão Arterial (${fields.pressaoArterial}) não reconhecido.`);
     }
 
-    const lastMedicalCare = parseBRDate(fields.dataUltimoAtendimentoMedico) || undefined;
-    const lastNursingCare = parseBRDate(fields.dataUltimoAtendimentoEnfermagem) || undefined;
-    const lastDentalCare = parseBRDate(fields.dataUltimoAtendimentoOdontologico) || undefined;
+    const daysMedical = parseESUSInt(fields.daysSinceMedicalCare);
+    const monthsMedical = parseESUSInt(fields.monthsSinceMedicalCare);
+    const daysNursing = parseESUSInt(fields.daysSinceNursingCare);
+    const monthsNursing = parseESUSInt(fields.monthsSinceNursingCare);
+    const daysDental = parseESUSInt(fields.daysSinceDentalCare);
+    const monthsDental = parseESUSInt(fields.monthsSinceDentalCare);
+    const daysHomeVisit = parseESUSInt(fields.daysSinceHomeVisit);
+    const monthsHomeVisit = parseESUSInt(fields.monthsSinceHomeVisit);
 
-    const monthsMedical = fields.monthsSinceMedicalCare !== undefined ? parseInt(String(fields.monthsSinceMedicalCare), 10) : undefined;
-    const monthsNursing = fields.monthsSinceNursingCare !== undefined ? parseInt(String(fields.monthsSinceNursingCare), 10) : undefined;
-    const monthsDental = fields.monthsSinceDentalCare !== undefined ? parseInt(String(fields.monthsSinceDentalCare), 10) : undefined;
-    const monthsHomeVisit = fields.monthsSinceHomeVisit !== undefined ? parseInt(String(fields.monthsSinceHomeVisit), 10) : undefined;
-    const daysHomeVisit = fields.daysSinceHomeVisit !== undefined ? parseInt(String(fields.daysSinceHomeVisit), 10) : undefined;
+    const lastMedicalCare = deriveCareDate(fields.dataUltimoAtendimentoMedico, daysMedical, monthsMedical);
+    const lastNursingCare = deriveCareDate(fields.dataUltimoAtendimentoEnfermagem, daysNursing, monthsNursing);
+    const lastDentalCare = deriveCareDate(fields.dataUltimoAtendimentoOdontologico, daysDental, monthsDental);
+    const lastHomeVisit = deriveCareDate(fields.dataUltimaVisitaACS, daysHomeVisit, monthsHomeVisit);
 
-    let lastHomeVisit = parseBRDate(fields.dataUltimaVisitaACS) || undefined;
-    if (!lastHomeVisit && daysHomeVisit !== undefined && !isNaN(daysHomeVisit) && daysHomeVisit >= 0) {
-      const refDate = new Date();
-      refDate.setDate(refDate.getDate() - daysHomeVisit);
-      lastHomeVisit = refDate.toISOString().substring(0, 10);
-    } else if (!lastHomeVisit && monthsHomeVisit !== undefined && !isNaN(monthsHomeVisit) && monthsHomeVisit >= 0) {
-      const refDate = new Date();
-      refDate.setDate(refDate.getDate() - monthsHomeVisit * 30);
-      lastHomeVisit = refDate.toISOString().substring(0, 10);
-    }
+    const elderlyCutoff = params.elderlyAgeCutoff ?? 60;
+    const obesityCutoff = params.obesityImcCutoff ?? 30;
+    const overweightCutoff = params.overweightImcCutoff ?? 25;
 
-    const isElderly = ageVal >= 60;
-    const isObese = !!imcVal && imcVal >= 30.0;
-    const isOverweight = !!imcVal && imcVal >= 25.0;
+    const isElderly = ageVal >= elderlyCutoff;
+    const isObese = !!imcVal && imcVal >= obesityCutoff;
+    const isOverweight = !!imcVal && imcVal >= overweightCutoff;
 
     // Prioridade Administrativa Estrita para Busca Ativa
-    const priorityObj = calculateAdminPriorityScore({
-      systolic: paObj?.systolic,
-      diastolic: paObj?.diastolic,
-      dataPA: dataPAIso || undefined,
-      monthsSinceHomeVisit: !isNaN(monthsHomeVisit!) ? monthsHomeVisit : undefined,
-      lastHomeVisit,
-      isElderly,
-      isObese,
-    });
+    const priorityObj = calculateAdminPriorityScore(
+      {
+        systolic: paObj?.systolic,
+        diastolic: paObj?.diastolic,
+        dataPA: dataPAIso || undefined,
+        monthsSinceHomeVisit: monthsHomeVisit,
+        lastHomeVisit,
+        isElderly,
+        isObese,
+      },
+      params
+    );
 
     let rowStatus: "Válido" | "Aviso" | "Erro" = "Válido";
     if (errors.length > 0) {
@@ -262,20 +309,34 @@ export function validateAndNormalizeESUSData(
       validCount++;
     }
 
+    const cleanAcsName = cleanESUSString(fields.acsName);
+
     const normalizedRecord: NormalizedPatientRecord = {
       nome: rawNome || "Desconhecido",
       nomeNormalizado: normNameStr || "DESCONHECIDO",
       dataNascimento: birthDateIso || "1970-01-01",
       idade: ageVal,
       sexo: sexoVal,
+      identidadeGenero: cleanESUSString(fields.identidadeGenero) || undefined,
+      racaCor: cleanESUSString(fields.racaCor) || undefined,
+      beneficiarioBolsaFamilia: parseBooleanESUS(fields.beneficiarioBolsaFamilia),
+      vigenciaBolsaFamilia: cleanESUSString(fields.vigenciaBolsaFamilia) || undefined,
       cpf: cpfClean,
       cns: cnsClean,
       telefoneOriginal: phoneObj.original,
       telefoneNormalizado: phoneObj.normalized,
+      telefoneCelular: phoneCelularObj.normalized || phoneCelularObj.original || undefined,
+      telefoneResidencial: phoneResidencialObj.normalized || phoneResidencialObj.original || undefined,
+      telefoneContato: phoneContatoObj.normalized || phoneContatoObj.original || undefined,
       microarea: cleanMicroarea,
-      acsName: fields.acsName || "Agente Comunitário",
-      logradouro: fields.logradouro || "",
-      bairro: fields.bairro || "",
+      acsName: cleanAcsName || "Agente Comunitário",
+      logradouro: cleanESUSString(fields.logradouro),
+      numero: cleanESUSString(fields.numero) || undefined,
+      complemento: cleanESUSString(fields.complemento) || undefined,
+      bairro: cleanESUSString(fields.bairro),
+      municipio: cleanESUSString(fields.municipio) || undefined,
+      uf: cleanESUSString(fields.uf) || undefined,
+      cep: cleanESUSString(fields.cep) || undefined,
       peso: pesoVal,
       altura: alturaVal,
       imc: imcVal,
@@ -287,11 +348,18 @@ export function validateAndNormalizeESUSData(
       lastNursingCare,
       lastDentalCare,
       lastHomeVisit,
-      monthsSinceMedicalCare: !isNaN(monthsMedical!) ? monthsMedical : undefined,
-      monthsSinceNursingCare: !isNaN(monthsNursing!) ? monthsNursing : undefined,
-      monthsSinceDentalCare: !isNaN(monthsDental!) ? monthsDental : undefined,
-      monthsSinceHomeVisit: !isNaN(monthsHomeVisit!) ? monthsHomeVisit : undefined,
-      daysSinceHomeVisit: !isNaN(daysHomeVisit!) ? daysHomeVisit : undefined,
+      daysSinceMedicalCare: daysMedical,
+      monthsSinceMedicalCare: monthsMedical,
+      daysSinceNursingCare: daysNursing,
+      monthsSinceNursingCare: monthsNursing,
+      daysSinceDentalCare: daysDental,
+      monthsSinceDentalCare: monthsDental,
+      monthsSinceHomeVisit: monthsHomeVisit,
+      daysSinceHomeVisit: daysHomeVisit,
+      hasHypertension: parseBooleanESUS(fields.hasHypertension),
+      hasDiabetes: parseBooleanESUS(fields.hasDiabetes),
+      isSmoker: parseBooleanESUS(fields.isSmoker),
+      hasCardiovascularDisease: parseBooleanESUS(fields.hasCardiovascularDisease),
       isElderly,
       isObese,
       isOverweight,

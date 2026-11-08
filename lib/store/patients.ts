@@ -15,7 +15,21 @@ export interface StorePatientDoc {
   idade: number | null;
   sexo: "Masculino" | "Feminino" | null;
   telefone?: string | null;
+  telefoneOriginal?: string | null;
   telefone_celular?: string | null;
+  telefoneCelular?: string | null;
+  telefoneResidencial?: string | null;
+  telefoneContato?: string | null;
+  racaCor?: string | null;
+  beneficiarioBolsaFamilia?: boolean | null;
+  vigenciaBolsaFamilia?: string | null;
+  logradouro?: string | null;
+  numero?: string | null;
+  complemento?: string | null;
+  bairro?: string | null;
+  municipio?: string | null;
+  uf?: string | null;
+  cep?: string | null;
   hasDiabetes?: boolean;
   hasHypertension?: boolean;
   isSmoker?: boolean;
@@ -26,18 +40,25 @@ export interface StorePatientDoc {
   pesoAtual: number | null;
   alturaAtual: number | null;
   imcAtual: number | null;
+  dataUltimaAntropometria?: string | null;
 
   pressaoSistolicaAtual: number | null;
   pressaoDiastolicaAtual: number | null;
   dataUltimaPA: string | null;
 
+  daysSinceMedicalCare?: number | null;
   monthsSinceMedicalCare: number | null;
+  daysSinceNursingCare?: number | null;
   monthsSinceNursingCare: number | null;
+  daysSinceDentalCare?: number | null;
   monthsSinceDentalCare: number | null;
   monthsSinceHomeVisit: number | null;
   daysSinceHomeVisit?: number | null;
   dataUltimaVisitaACS?: string | null;
   dataUltimaVisita?: string | null;
+  dataUltimaConsulta?: string | null;
+  dataUltimoAtendimentoEnfermagem?: string | null;
+  dataUltimoAtendimentoOdontologico?: string | null;
 
   prioridade: "Alta" | "Média" | "Atenção" | "Acompanhado";
   motivosPrioridade: string | null;
@@ -135,13 +156,22 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
         const mData = mDoc.data();
         if (mData.unidadeId && mData.codigo && mData.acsNome) {
           const cleanCode = (mData.codigo || "").replace(/\D/g, "").trim();
-          microareaAcsMap.set(`${mData.unidadeId}_${cleanCode}`, mData.acsNome);
+          const paddedCode = cleanCode ? cleanCode.padStart(2, "0") : "";
+          if (cleanCode) microareaAcsMap.set(`${mData.unidadeId}_${cleanCode}`, mData.acsNome);
+          if (paddedCode) microareaAcsMap.set(`${mData.unidadeId}_${paddedCode}`, mData.acsNome);
           microareaAcsMap.set(`${mData.unidadeId}_${mData.codigo}`, mData.acsNome);
         }
       });
     } catch (maErr) {
       // Ignorar
     }
+
+    const normalizedAssignedCodes = Array.isArray(options?.assignedMicroareaCodes)
+      ? options!.assignedMicroareaCodes.map((c) => {
+          const digits = String(c || "").replace(/\D/g, "").trim();
+          return digits ? digits.padStart(2, "0") : String(c || "").trim();
+        })
+      : undefined;
 
     const querySnapshot = await getDocs(collection(db, "pacientes"));
     querySnapshot.forEach((docSnap) => {
@@ -157,15 +187,22 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
 
       const pUnitId = data.unidadeId || "USF-003";
       const pMicroarea = data.microarea || "Sem microárea";
-      const patMACode = (pMicroarea || "").replace(/\D/g, "").trim() || data.microareaCodigo || "";
+      const rawDigits =
+        (pMicroarea || "").replace(/\D/g, "").trim() ||
+        (data.microareaCodigo || "").replace(/\D/g, "").trim();
+      const patMACode = rawDigits ? rawDigits.padStart(2, "0") : data.microareaCodigo || "";
 
       // Filtro de Escopo em nível de consulta Store
       if (options?.role === "ACS") {
         if (options.userUnitId && pUnitId !== options.userUnitId) {
           return;
         }
-        if (options.assignedMicroareaCodes && options.assignedMicroareaCodes.length > 0) {
-          if (!options.assignedMicroareaCodes.includes(patMACode)) {
+        if (normalizedAssignedCodes !== undefined) {
+          if (
+            normalizedAssignedCodes.length === 0 ||
+            (!normalizedAssignedCodes.includes(patMACode) &&
+              !(rawDigits && normalizedAssignedCodes.includes(rawDigits)))
+          ) {
             return;
           }
         }
@@ -176,13 +213,16 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
       }
 
       const maKey = `${pUnitId}_${patMACode}`;
-      const assignedAcsFromMA = microareaAcsMap.get(maKey) || (data.microareaCodigo ? microareaAcsMap.get(`${pUnitId}_${data.microareaCodigo}`) : undefined);
+      const assignedAcsFromMA =
+        microareaAcsMap.get(maKey) ||
+        (rawDigits ? microareaAcsMap.get(`${pUnitId}_${rawDigits}`) : undefined) ||
+        (data.microareaCodigo ? microareaAcsMap.get(`${pUnitId}_${data.microareaCodigo}`) : undefined);
 
       let resolvedACSName = "";
-      if (data.acsNome && data.acsNome !== "Agente Comunitário") {
-        resolvedACSName = data.acsNome;
-      } else if (assignedAcsFromMA) {
+      if (assignedAcsFromMA) {
         resolvedACSName = assignedAcsFromMA;
+      } else if (data.acsNome && data.acsNome !== "Agente Comunitário") {
+        resolvedACSName = data.acsNome;
       } else if (options?.role === "ACS" && options?.acsName) {
         resolvedACSName = options.acsName;
       } else {
@@ -250,7 +290,7 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
       }
 
       if (data.pesoAtual && data.alturaAtual) {
-        const currentDate = new Date().toISOString().substring(0, 10);
+        const currentDate = data.dataUltimaAntropometria || new Date().toISOString().substring(0, 10);
         if (!extractedWeightHistory.some((h) => h.date === currentDate)) {
           extractedWeightHistory.push({
             id: `w-current-${docSnap.id}`,
@@ -265,18 +305,43 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
       extractedPAHistory.sort((a, b) => a.date.localeCompare(b.date));
       extractedWeightHistory.sort((a, b) => a.date.localeCompare(b.date));
 
+      const resolvedPhone =
+        data.telefone ||
+        data.telefoneCelular ||
+        data.telefone_celular ||
+        data.telefoneContato ||
+        data.telefoneResidencial ||
+        data.telefoneOriginal ||
+        "";
+
       list.push({
         id: docSnap.id,
         name: data.nome,
         cpf: data.cpf || "Sem CPF",
         cns: data.cns || "Sem CNS",
+        birthDate: data.dataNascimento || undefined,
         age: data.idade || 0,
         sex: data.sexo || "Feminino",
-        phone: data.telefone || data.telefone_celular || "",
+        genderIdentity: data.identidadeGenero || undefined,
+        raceColor: data.racaCor || undefined,
+        bolsaFamilia: data.beneficiarioBolsaFamilia ?? undefined,
+        bolsaFamiliaValidity: data.vigenciaBolsaFamilia || undefined,
+        phone: resolvedPhone,
+        phoneCell: data.telefoneCelular || data.telefone_celular || undefined,
+        phoneHome: data.telefoneResidencial || undefined,
+        phoneContact: data.telefoneContato || undefined,
+        street: data.logradouro || undefined,
+        number: data.numero || undefined,
+        complement: data.complemento || undefined,
+        neighborhood: data.bairro || undefined,
+        city: data.municipio || undefined,
+        state: data.uf || undefined,
+        zipCode: data.cep || undefined,
         unit: data.unidadeNome || MOCK_UNIT_NAME,
         unidadeId: pUnitId,
         unidadeNome: data.unidadeNome || MOCK_UNIT_NAME,
         microarea: pMicroarea,
+        microareaCodigo: patMACode || undefined,
         acsName: resolvedACSName,
         isElderly: (data.idade || 0) >= 60,
         hasHypertension: data.hasHypertension || (data.pressaoSistolicaAtual && data.pressaoSistolicaAtual >= 140) || false,
@@ -294,13 +359,23 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
         } : undefined,
         lastWeight: data.pesoAtual && data.alturaAtual ? {
           id: `w-${docSnap.id}`,
-          date: new Date().toISOString().substring(0, 10),
+          date: data.dataUltimaAntropometria || new Date().toISOString().substring(0, 10),
           weight: data.pesoAtual,
           height: data.alturaAtual,
           imc: data.imcAtual || 0,
         } : undefined,
         lastVisitDate: lastVisitDate || "",
         lastMedicalApptDate: lastMedicalApptDate || "",
+        lastNursingApptDate: data.dataUltimoAtendimentoEnfermagem || "",
+        lastDentalApptDate: data.dataUltimoAtendimentoOdontologico || "",
+        daysSinceMedicalCare: data.daysSinceMedicalCare ?? undefined,
+        monthsSinceMedicalCare: data.monthsSinceMedicalCare ?? undefined,
+        daysSinceNursingCare: data.daysSinceNursingCare ?? undefined,
+        monthsSinceNursingCare: data.monthsSinceNursingCare ?? undefined,
+        daysSinceDentalCare: data.daysSinceDentalCare ?? undefined,
+        monthsSinceDentalCare: data.monthsSinceDentalCare ?? undefined,
+        daysSinceHomeVisit: data.daysSinceHomeVisit ?? undefined,
+        monthsSinceHomeVisit: data.monthsSinceHomeVisit ?? undefined,
         priority: data.prioridade,
         activeSearchReason: data.motivosPrioridade || undefined,
         activeSearchStatus: data.prioridade === "Alta" ? "Pendente" : "Acompanhado",
@@ -413,4 +488,21 @@ export async function getPatientHistorySnapshotsFromStore(patientId: string): Pr
   const list = Array.from(snapshotMap.values());
   // Ordenar do mais recente para o mais antigo por dataCarga DESC
   return list.sort((a, b) => (b.dataCarga || "").localeCompare(a.dataCarga || ""));
+}
+
+// 6. Atualizar condições crônicas manualmente no prontuário (GERENTE / ADMIN)
+export async function updatePatientConditionsInStore(
+  patientId: string,
+  conditions: {
+    hasHypertension?: boolean;
+    hasDiabetes?: boolean;
+    isSmoker?: boolean;
+    hasCardiovascularDisease?: boolean;
+  }
+): Promise<void> {
+  const patientRef = doc(db, "pacientes", patientId);
+  await updateDoc(patientRef, {
+    ...conditions,
+    updatedAt: new Date().toISOString(),
+  });
 }

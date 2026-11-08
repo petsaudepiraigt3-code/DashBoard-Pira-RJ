@@ -1,9 +1,68 @@
 import { NormalizedPatientRecord } from "./types";
 
+// 0. Limpeza de valores vazios ou hífen ("-") padrão do e-SUS APS
+export function cleanESUSString(raw: any): string {
+  if (raw === null || raw === undefined) return "";
+  const cleaned = String(raw)
+    .trim()
+    .replace(/^["']+|["']+$/g, "")
+    .trim();
+  if (
+    !cleaned ||
+    cleaned === "-" ||
+    cleaned === "--" ||
+    cleaned.toLowerCase() === "null" ||
+    cleaned.toLowerCase() === "undefined"
+  ) {
+    return "";
+  }
+  return cleaned;
+}
+
+export function parseBooleanESUS(raw: any): boolean {
+  if (typeof raw === "boolean") return raw;
+  const cleaned = cleanESUSString(raw).toLowerCase();
+  if (!cleaned) return false;
+  return cleaned === "sim" || cleaned === "s" || cleaned === "true" || cleaned === "1" || cleaned === "ativo";
+}
+
+export function parseESUSAge(ageRaw: any, birthDateIso?: string | null): number {
+  if (typeof ageRaw === "number" && !isNaN(ageRaw) && ageRaw >= 0) {
+    return Math.floor(ageRaw);
+  }
+  const str = cleanESUSString(ageRaw);
+  if (str) {
+    const yearsMatch = str.match(/(\d+)\s*ano/i);
+    if (yearsMatch) {
+      return parseInt(yearsMatch[1], 10);
+    }
+    if (/\b(mes|mês|meses|dia|dias)\b/i.test(str) && !/ano/i.test(str)) {
+      return 0;
+    }
+    if (/^\d+$/.test(str)) {
+      return parseInt(str, 10);
+    }
+  }
+  if (birthDateIso) {
+    const bDate = new Date(birthDateIso);
+    if (!isNaN(bDate.getTime())) {
+      const now = new Date();
+      let age = now.getFullYear() - bDate.getFullYear();
+      const mDiff = now.getMonth() - bDate.getMonth();
+      if (mDiff < 0 || (mDiff === 0 && now.getDate() < bDate.getDate())) {
+        age--;
+      }
+      return Math.max(0, age);
+    }
+  }
+  return -1;
+}
+
 // 1. Normalização de CPF
 export function normalizeCPF(cpfRaw: any): string {
-  if (!cpfRaw) return "";
-  const cleaned = String(cpfRaw).replace(/\D/g, "");
+  const str = cleanESUSString(cpfRaw);
+  if (!str) return "";
+  const cleaned = str.replace(/\D/g, "");
   if (cleaned.length === 11) {
     return cleaned;
   }
@@ -18,8 +77,9 @@ export function maskCPF(cpf: string): string {
 
 // 3. Normalização de CNS
 export function normalizeCNS(cnsRaw: any): string {
-  if (!cnsRaw) return "";
-  const cleaned = String(cnsRaw).replace(/\D/g, "");
+  const str = cleanESUSString(cnsRaw);
+  if (!str) return "";
+  const cleaned = str.replace(/\D/g, "");
   if (cleaned.length === 15) {
     return cleaned;
   }
@@ -34,8 +94,8 @@ export function maskCNS(cns: string): string {
 
 // 5. Normalização de Telefone
 export function normalizePhone(phoneRaw: any): { original: string; normalized: string } {
-  if (!phoneRaw) return { original: "", normalized: "" };
-  const original = String(phoneRaw).trim().replace(/^["']|["']$/g, "");
+  const original = cleanESUSString(phoneRaw);
+  if (!original) return { original: "", normalized: "" };
   const digits = original.replace(/\D/g, "");
   return {
     original,

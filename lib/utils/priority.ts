@@ -1,4 +1,5 @@
-import { Patient, PriorityLevel, PatientActionRecord } from "@/types/dcnt";
+import { Patient, PriorityLevel, PatientActionRecord, DcntParameters } from "@/types/dcnt";
+import { DEFAULT_DCNT_PARAMETERS } from "@/lib/store/parameters";
 
 /**
  * Interface para os fatores de entrada da pontuação administrativa de Busca Ativa.
@@ -84,40 +85,60 @@ export function monthsSinceDate(dateIsoStr?: string | null): number {
  * - Atenção: score >= 1 ponto (e não classificado como Média ou Alta)
  * - Acompanhado: score === 0 pontos (todos os indicadores dentro do esperado)
  */
-export function calculateAdminPriorityScore(record: AdminPriorityInput): AdminPriorityResult {
+export function calculateAdminPriorityScore(
+  record: AdminPriorityInput,
+  params: DcntParameters = DEFAULT_DCNT_PARAMETERS
+): AdminPriorityResult {
   let score = 0;
   const reasons: string[] = [];
   const contributingFactors: PriorityContributingFactor[] = [];
   let isPaElevated = false;
 
+  const sysCutoff = params.systolicAlteradaCutoff ?? 140;
+  const diaCutoff = params.diastolicAlteradaCutoff ?? 90;
+  const monthsPACutoff = params.monthsWithoutPA ?? 6;
+  const monthsVisitCutoff = params.monthsWithoutVisit ?? 3;
+  const elderlyCutoff = params.elderlyAgeCutoff ?? 60;
+  const obesityCutoff = params.obesityImcCutoff ?? 30;
+
+  const wAlteredPA = params.priorityWeights?.alteredPA ?? 4;
+  const wOutdatedPA = params.priorityWeights?.outdatedPA ?? 2;
+  const wOutdatedVisit = params.priorityWeights?.outdatedVisit ?? 2;
+  const wElderly = params.priorityWeights?.elderly ?? 1;
+  const wObesity = params.priorityWeights?.obesity ?? 1;
+
+  const highCutoff = params.priorityCutoffs?.high ?? 6;
+  const mediumCutoff = params.priorityCutoffs?.medium ?? 3;
+  const attentionCutoff = params.priorityCutoffs?.attention ?? 1;
+
   // 1. Pressão Arterial Aferida
   if (record.systolic && record.diastolic) {
-    if (record.systolic >= 140 || record.diastolic >= 90) {
+    if (record.systolic >= sysCutoff || record.diastolic >= diaCutoff) {
       isPaElevated = true;
-      score += 4;
-      const desc = `PA >= 140/90 mmHg (${record.systolic}/${record.diastolic} mmHg - Parâmetro de Busca Ativa)`;
+      score += wAlteredPA;
+      const desc = `PA >= ${sysCutoff}/${diaCutoff} mmHg (${record.systolic}/${record.diastolic} mmHg - Parâmetro de Busca Ativa)`;
       reasons.push(desc);
       contributingFactors.push({
         id: "PA_ELEVADA",
         title: `PA Alterada: ${record.systolic}/${record.diastolic} mmHg`,
-        description: `Pressão arterial registrada em ${record.systolic}/${record.diastolic} mmHg, atendendo ao critério de PA alterada (sistólica ≥ 140 mmHg ou diastólica ≥ 90 mmHg) utilizado pela Busca Ativa.`,
+        description: `Pressão arterial registrada em ${record.systolic}/${record.diastolic} mmHg, atendendo ao critério de PA alterada (sistólica ≥ ${sysCutoff} mmHg ou diastólica ≥ ${diaCutoff} mmHg) utilizado pela Busca Ativa.`,
         source: "e-SUS APS",
-        scoreContribution: 4,
+        scoreContribution: wAlteredPA,
       });
     }
   }
 
   // 2. Tempo desde a última aferição de PA
   const monthsPA = record.dataPA ? monthsSinceDate(record.dataPA) : 999;
-  if (monthsPA > 6 && monthsPA !== 999) {
-    score += 2;
+  if (monthsPA > monthsPACutoff && monthsPA !== 999) {
+    score += wOutdatedPA;
     reasons.push(`Aferição de PA desatualizada (há ${monthsPA} meses)`);
     contributingFactors.push({
       id: "PA_DESATUALIZADA",
       title: `Aferição de PA desatualizada`,
-      description: `Última aferição de pressão arterial registrada há ${monthsPA} meses no sistema (critério de monitoramento: mais de 6 meses sem aferição).`,
+      description: `Última aferição de pressão arterial registrada há ${monthsPA} meses no sistema (critério de monitoramento: mais de ${monthsPACutoff} meses sem aferição).`,
       source: "e-SUS APS",
-      scoreContribution: 2,
+      scoreContribution: wOutdatedPA,
     });
   }
 
@@ -127,51 +148,51 @@ export function calculateAdminPriorityScore(record: AdminPriorityInput): AdminPr
       ? record.monthsSinceHomeVisit
       : monthsSinceDate(record.lastHomeVisit);
 
-  if (monthsVisit > 3 && monthsVisit !== 999) {
-    score += 2;
+  if (monthsVisit > monthsVisitCutoff && monthsVisit !== 999) {
+    score += wOutdatedVisit;
     reasons.push(`Visita domiciliar desatualizada (há ${monthsVisit} meses)`);
     contributingFactors.push({
       id: "VISITA_DESATUALIZADA",
       title: `Visita ACS desatualizada`,
-      description: `Última visita domiciliar registrada há ${monthsVisit} meses (critério de monitoramento: mais de 3 meses sem visita domiciliar do ACS).`,
+      description: `Última visita domiciliar registrada há ${monthsVisit} meses (critério de monitoramento: mais de ${monthsVisitCutoff} meses sem visita domiciliar do ACS).`,
       source: "e-SUS APS",
-      scoreContribution: 2,
+      scoreContribution: wOutdatedVisit,
     });
   }
 
   // 4. Idoso (60+ anos)
   if (record.isElderly) {
-    score += 1;
-    reasons.push("Idoso (60+ anos)");
+    score += wElderly;
+    reasons.push(`Idoso (${elderlyCutoff}+ anos)`);
     contributingFactors.push({
       id: "IDOSO",
-      title: `Pessoa Idosa (60+ anos)`,
-      description: `Faixa etária de 60 anos ou mais, contemplada na pontuação de monitoramento continuado da atenção primária.`,
+      title: `Pessoa Idosa (${elderlyCutoff}+ anos)`,
+      description: `Faixa etária de ${elderlyCutoff} anos ou mais, contemplada na pontuação de monitoramento continuado da atenção primária.`,
       source: "e-SUS APS",
-      scoreContribution: 1,
+      scoreContribution: wElderly,
     });
   }
 
   // 5. Obesidade (IMC >= 30)
   if (record.isObese) {
-    score += 1;
-    reasons.push("Obesidade (IMC >= 30)");
+    score += wObesity;
+    reasons.push(`Obesidade (IMC >= ${obesityCutoff})`);
     contributingFactors.push({
       id: "OBESIDADE",
-      title: `Obesidade (IMC ≥ 30 kg/m²)`,
-      description: `Registro antropométrico com Índice de Massa Corporal superior ou igual a 30,0 kg/m².`,
+      title: `Obesidade (IMC ≥ ${obesityCutoff} kg/m²)`,
+      description: `Registro antropométrico com Índice de Massa Corporal superior ou igual a ${obesityCutoff.toFixed(1).replace(".", ",")} kg/m².`,
       source: "e-SUS APS",
-      scoreContribution: 1,
+      scoreContribution: wObesity,
     });
   }
 
   // Determinação Estrita do Nível
   let priority: "Alta" | "Média" | "Atenção" | "Acompanhado" = "Acompanhado";
-  if (isPaElevated || score >= 6) {
+  if (isPaElevated || score >= highCutoff) {
     priority = "Alta";
-  } else if (score >= 3) {
+  } else if (score >= mediumCutoff) {
     priority = "Média";
-  } else if (score >= 1) {
+  } else if (score >= attentionCutoff) {
     priority = "Atenção";
   }
 
@@ -191,7 +212,8 @@ export function calculateAdminPriorityScore(record: AdminPriorityInput): AdminPr
  */
 export function getPriorityExplanation(
   patient: Patient,
-  actions?: PatientActionRecord[]
+  actions?: PatientActionRecord[],
+  params: DcntParameters = DEFAULT_DCNT_PARAMETERS
 ): PriorityExplanation {
   const allActions = actions || patient.historicoAcoes || [];
   const lastAction = allActions.length > 0 ? allActions[0] : null;
@@ -212,19 +234,24 @@ export function getPriorityExplanation(
     monthsVisit = monthsSinceDate(lastVisit);
   }
 
-  const isElderly = patient.isElderly || patient.age >= 60;
-  const isObese = patient.isObese || (patient.lastWeight?.imc ? patient.lastWeight.imc >= 30.0 : false);
+  const elderlyCutoff = params.elderlyAgeCutoff ?? 60;
+  const obesityCutoff = params.obesityImcCutoff ?? 30;
+  const isElderly = patient.isElderly || patient.age >= elderlyCutoff;
+  const isObese = patient.isObese || (patient.lastWeight?.imc ? patient.lastWeight.imc >= obesityCutoff : false);
 
   // Executa o cálculo da regra oficial
-  const ruleResult = calculateAdminPriorityScore({
-    systolic,
-    diastolic,
-    dataPA,
-    monthsSinceHomeVisit: monthsVisit,
-    lastHomeVisit: lastVisit,
-    isElderly,
-    isObese,
-  });
+  const ruleResult = calculateAdminPriorityScore(
+    {
+      systolic,
+      diastolic,
+      dataPA,
+      monthsSinceHomeVisit: monthsVisit,
+      lastHomeVisit: lastVisit,
+      isElderly,
+      isObese,
+    },
+    params
+  );
 
   // Prioridade efetiva do paciente (garantindo consistência absoluta com a exibição do prontuário)
   const effectivePriority = patient.priority || ruleResult.priority;

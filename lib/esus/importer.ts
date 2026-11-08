@@ -67,10 +67,10 @@ function indexPatient(map: Map<string, StorePatientDoc>, norm: NormalizedPatient
 
 function clinicalEvents(norm: NormalizedPatientRecord) {
   return [
-    { tipo: 'Médico', data: norm.lastMedicalCare },
-    { tipo: 'Enfermagem', data: norm.lastNursingCare },
-    { tipo: 'Odontológico', data: norm.lastDentalCare },
-    { tipo: 'Visita Domiciliar', data: norm.lastHomeVisit },
+    { tipo: 'Médico', data: norm.lastMedicalCare, dias: norm.daysSinceMedicalCare ?? null, meses: norm.monthsSinceMedicalCare ?? null },
+    { tipo: 'Enfermagem', data: norm.lastNursingCare, dias: norm.daysSinceNursingCare ?? null, meses: norm.monthsSinceNursingCare ?? null },
+    { tipo: 'Odontológico', data: norm.lastDentalCare, dias: norm.daysSinceDentalCare ?? null, meses: norm.monthsSinceDentalCare ?? null },
+    { tipo: 'Visita Domiciliar', data: norm.lastHomeVisit, dias: norm.daysSinceHomeVisit ?? null, meses: norm.monthsSinceHomeVisit ?? null },
   ].filter(event => !!event.data);
 }
  
@@ -281,9 +281,39 @@ export async function executeFivePatientsTestImportToStore(
       dataNascimento: norm.dataNascimento || null,
       idade: norm.idade !== undefined ? norm.idade : null,
       sexo: norm.sexo || null,
-      identidadeGenero: norm.identidadeGenero || null,
+      identidadeGenero: norm.identidadeGenero || prevPatientData?.identidadeGenero || null,
+      racaCor: norm.racaCor || prevPatientData?.racaCor || null,
+      beneficiarioBolsaFamilia:
+        norm.beneficiarioBolsaFamilia !== undefined
+          ? norm.beneficiarioBolsaFamilia
+          : prevPatientData?.beneficiarioBolsaFamilia ?? null,
+      vigenciaBolsaFamilia: norm.vigenciaBolsaFamilia || prevPatientData?.vigenciaBolsaFamilia || null,
       telefone: norm.telefoneNormalizado || prevPatientData?.telefone || null,
       telefoneOriginal: norm.telefoneOriginal || prevPatientData?.telefoneOriginal || null,
+      telefoneCelular: norm.telefoneCelular || prevPatientData?.telefoneCelular || null,
+      telefoneResidencial: norm.telefoneResidencial || prevPatientData?.telefoneResidencial || null,
+      telefoneContato: norm.telefoneContato || prevPatientData?.telefoneContato || null,
+      logradouro: norm.logradouro || prevPatientData?.logradouro || null,
+      numero: norm.numero || prevPatientData?.numero || null,
+      complemento: norm.complemento || prevPatientData?.complemento || null,
+      bairro: norm.bairro || prevPatientData?.bairro || null,
+      municipio: norm.municipio || prevPatientData?.municipio || null,
+      uf: norm.uf || prevPatientData?.uf || null,
+      cep: norm.cep || prevPatientData?.cep || null,
+      acsNome:
+        norm.acsName && norm.acsName !== "Agente Comunitário"
+          ? norm.acsName
+          : prevPatientData?.acsNome || null,
+      hasHypertension:
+        norm.hasHypertension !== undefined ? norm.hasHypertension : prevPatientData?.hasHypertension ?? false,
+      hasDiabetes:
+        norm.hasDiabetes !== undefined ? norm.hasDiabetes : prevPatientData?.hasDiabetes ?? false,
+      isSmoker:
+        norm.isSmoker !== undefined ? norm.isSmoker : prevPatientData?.isSmoker ?? false,
+      hasCardiovascularDisease:
+        norm.hasCardiovascularDisease !== undefined
+          ? norm.hasCardiovascularDisease
+          : prevPatientData?.hasCardiovascularDisease ?? false,
       dataUltimaConsulta: norm.lastMedicalCare || prevPatientData?.dataUltimaConsulta || null,
       dataUltimoAtendimentoEnfermagem: norm.lastNursingCare || prevPatientData?.dataUltimoAtendimentoEnfermagem || null,
       dataUltimoAtendimentoOdontologico: norm.lastDentalCare || prevPatientData?.dataUltimoAtendimentoOdontologico || null,
@@ -297,13 +327,17 @@ export async function executeFivePatientsTestImportToStore(
       pesoAtual: norm.peso !== undefined ? norm.peso : null,
       alturaAtual: norm.altura !== undefined ? norm.altura : null,
       imcAtual: norm.imc !== undefined ? norm.imc : null,
+      dataUltimaAntropometria: norm.dataMedicao || prevPatientData?.dataUltimaAntropometria || null,
 
       pressaoSistolicaAtual: norm.systolic !== undefined ? norm.systolic : null,
       pressaoDiastolicaAtual: norm.diastolic !== undefined ? norm.diastolic : null,
       dataUltimaPA: norm.dataPA || null,
 
+      daysSinceMedicalCare: norm.daysSinceMedicalCare !== undefined ? norm.daysSinceMedicalCare : null,
       monthsSinceMedicalCare: norm.monthsSinceMedicalCare !== undefined ? norm.monthsSinceMedicalCare : null,
+      daysSinceNursingCare: norm.daysSinceNursingCare !== undefined ? norm.daysSinceNursingCare : null,
       monthsSinceNursingCare: norm.monthsSinceNursingCare !== undefined ? norm.monthsSinceNursingCare : null,
+      daysSinceDentalCare: norm.daysSinceDentalCare !== undefined ? norm.daysSinceDentalCare : null,
       monthsSinceDentalCare: norm.monthsSinceDentalCare !== undefined ? norm.monthsSinceDentalCare : null,
       monthsSinceHomeVisit: norm.monthsSinceHomeVisit !== undefined ? norm.monthsSinceHomeVisit : null,
       daysSinceHomeVisit: norm.daysSinceHomeVisit !== undefined ? norm.daysSinceHomeVisit : null,
@@ -387,7 +421,7 @@ export async function executeFivePatientsTestImportToStore(
     for (const event of clinicalEvents(norm)) {
       const eventRef = doc(db, 'pacientes', patientDocId, 'atendimentos', `${event.tipo}_${event.data}`);
       if (!(await getDoc(eventRef)).exists()) novosAtendimentos++;
-      await setDoc(eventRef, { ...event, unidadeId, origem: 'e-SUS APS', createdAt: serverTimestamp() }, { merge: true });
+      await setDoc(eventRef, { ...event, unidadeId, importacaoId: 'teste-5-pacientes', origem: 'e-SUS APS', createdAt: serverTimestamp() }, { merge: true });
     }
 
     // Persistir simultaneamente no Supabase PostgreSQL (Tabelas do PDF)
@@ -581,6 +615,7 @@ export async function executeESUSImportToStore(
     const existingCargas = (existingPatient as any)?.historicoCargas || [];
     const updatedHistoricoCargas = [snapshot, ...existingCargas].slice(0, 20);
 
+    const existingAny = existingPatient as any;
     const patientData = {
       nome: norm.nome,
       cpf: norm.cpf || null,
@@ -588,12 +623,42 @@ export async function executeESUSImportToStore(
       dataNascimento: norm.dataNascimento || null,
       idade: norm.idade !== undefined ? norm.idade : null,
       sexo: norm.sexo || null,
-      identidadeGenero: norm.identidadeGenero || null,
+      identidadeGenero: norm.identidadeGenero || existingAny?.identidadeGenero || null,
+      racaCor: norm.racaCor || existingAny?.racaCor || null,
+      beneficiarioBolsaFamilia:
+        norm.beneficiarioBolsaFamilia !== undefined
+          ? norm.beneficiarioBolsaFamilia
+          : existingAny?.beneficiarioBolsaFamilia ?? null,
+      vigenciaBolsaFamilia: norm.vigenciaBolsaFamilia || existingAny?.vigenciaBolsaFamilia || null,
       telefone: norm.telefoneNormalizado || existingPatient?.telefone || null,
-      telefoneOriginal: norm.telefoneOriginal || null,
-      dataUltimaConsulta: norm.lastMedicalCare || (existingPatient as StorePatientDoc & { dataUltimaConsulta?: string })?.dataUltimaConsulta || null,
-      dataUltimoAtendimentoEnfermagem: norm.lastNursingCare || null,
-      dataUltimoAtendimentoOdontologico: norm.lastDentalCare || null,
+      telefoneOriginal: norm.telefoneOriginal || existingAny?.telefoneOriginal || null,
+      telefoneCelular: norm.telefoneCelular || existingAny?.telefoneCelular || null,
+      telefoneResidencial: norm.telefoneResidencial || existingAny?.telefoneResidencial || null,
+      telefoneContato: norm.telefoneContato || existingAny?.telefoneContato || null,
+      logradouro: norm.logradouro || existingAny?.logradouro || null,
+      numero: norm.numero || existingAny?.numero || null,
+      complemento: norm.complemento || existingAny?.complemento || null,
+      bairro: norm.bairro || existingAny?.bairro || null,
+      municipio: norm.municipio || existingAny?.municipio || null,
+      uf: norm.uf || existingAny?.uf || null,
+      cep: norm.cep || existingAny?.cep || null,
+      acsNome:
+        norm.acsName && norm.acsName !== "Agente Comunitário"
+          ? norm.acsName
+          : existingAny?.acsNome || null,
+      hasHypertension:
+        norm.hasHypertension !== undefined ? norm.hasHypertension : existingAny?.hasHypertension ?? false,
+      hasDiabetes:
+        norm.hasDiabetes !== undefined ? norm.hasDiabetes : existingAny?.hasDiabetes ?? false,
+      isSmoker:
+        norm.isSmoker !== undefined ? norm.isSmoker : existingAny?.isSmoker ?? false,
+      hasCardiovascularDisease:
+        norm.hasCardiovascularDisease !== undefined
+          ? norm.hasCardiovascularDisease
+          : existingAny?.hasCardiovascularDisease ?? false,
+      dataUltimaConsulta: norm.lastMedicalCare || existingAny?.dataUltimaConsulta || null,
+      dataUltimoAtendimentoEnfermagem: norm.lastNursingCare || existingAny?.dataUltimoAtendimentoEnfermagem || null,
+      dataUltimoAtendimentoOdontologico: norm.lastDentalCare || existingAny?.dataUltimoAtendimentoOdontologico || null,
       unidadeId,
       unidadeNome,
       microareaId: maMeta.microareaId,
@@ -604,13 +669,17 @@ export async function executeESUSImportToStore(
       pesoAtual: norm.peso !== undefined ? norm.peso : null,
       alturaAtual: norm.altura !== undefined ? norm.altura : null,
       imcAtual: norm.imc !== undefined ? norm.imc : null,
+      dataUltimaAntropometria: norm.dataMedicao || existingAny?.dataUltimaAntropometria || null,
 
       pressaoSistolicaAtual: norm.systolic !== undefined ? norm.systolic : null,
       pressaoDiastolicaAtual: norm.diastolic !== undefined ? norm.diastolic : null,
       dataUltimaPA: norm.dataPA || null,
 
+      daysSinceMedicalCare: norm.daysSinceMedicalCare !== undefined ? norm.daysSinceMedicalCare : null,
       monthsSinceMedicalCare: norm.monthsSinceMedicalCare !== undefined ? norm.monthsSinceMedicalCare : null,
+      daysSinceNursingCare: norm.daysSinceNursingCare !== undefined ? norm.daysSinceNursingCare : null,
       monthsSinceNursingCare: norm.monthsSinceNursingCare !== undefined ? norm.monthsSinceNursingCare : null,
+      daysSinceDentalCare: norm.daysSinceDentalCare !== undefined ? norm.daysSinceDentalCare : null,
       monthsSinceDentalCare: norm.monthsSinceDentalCare !== undefined ? norm.monthsSinceDentalCare : null,
       monthsSinceHomeVisit: norm.monthsSinceHomeVisit !== undefined ? norm.monthsSinceHomeVisit : null,
       daysSinceHomeVisit: norm.daysSinceHomeVisit !== undefined ? norm.daysSinceHomeVisit : null,
@@ -717,7 +786,7 @@ export async function executeESUSImportToStore(
       const eventRef = doc(db, 'pacientes', patientDocId, 'atendimentos', `${event.tipo}_${event.data}`);
       if (!newClinicalRecords.has(eventRef.path) && !(await getDoc(eventRef)).exists()) novosAtendimentosCount++;
       newClinicalRecords.add(eventRef.path);
-      currentBatch.set(eventRef, { ...event, unidadeId, origem: 'e-SUS APS', createdAt: serverTimestamp() }, { merge: true });
+      currentBatch.set(eventRef, { ...event, unidadeId, importacaoId: importId, origem: 'e-SUS APS', createdAt: serverTimestamp() }, { merge: true });
       batchOpCount++;
     }
 

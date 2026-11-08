@@ -7,9 +7,11 @@ import { BadgePriority } from "@/components/ui/badge-priority";
 import { BarChartSVG, DonutChartSVG } from "@/components/ui/charts";
 import { getAllPatientsFromStore } from "@/lib/store/patients";
 import { getUnitAdministrativeDiagnostics } from "@/lib/store/units";
-import { Patient } from "@/types/dcnt";
+import { DEFAULT_DCNT_PARAMETERS, getDcntParametersFromStore } from "@/lib/store/parameters";
+import { DcntParameters, Patient } from "@/types/dcnt";
 import { useRouter } from "next/navigation";
 import { formatDateBR } from "@/lib/utils/formatters";
+import { monthsSinceDate } from "@/lib/utils/priority";
 import {
   Users,
   UserCheck,
@@ -28,7 +30,14 @@ import {
 import { useAuth } from "@/context/auth-context";
 import { getSortedPendingReturns } from "@/lib/utils/returns";
 import { RegisterActionModal } from "@/components/ui/register-action-modal";
-import { isSemVisitaACS } from "@/lib/utils/patient-filters";
+import {
+  isIdoso,
+  isObesidade,
+  isPAAlterada,
+  isSemPARecente,
+  isSemVisitaACS,
+  isSobrepeso,
+} from "@/lib/utils/patient-filters";
 import { generateManagerPDFReport } from "@/lib/utils/pdf-generator";
 
 export default function DashboardPage() {
@@ -39,6 +48,7 @@ export default function DashboardPage() {
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loadingPatients, setLoadingPatients] = useState(true);
   const [coverageStats, setCoverageStats] = useState<any>(null);
+  const [dcntParams, setDcntParams] = useState<DcntParameters>(DEFAULT_DCNT_PARAMETERS);
 
   // Modal de Ação Operacional
   const [selectedPatientForAction, setSelectedPatientForAction] = useState<Patient | null>(null);
@@ -47,16 +57,18 @@ export default function DashboardPage() {
   // Carregar dados reais (Supabase PostgreSQL)
   useEffect(() => {
     async function loadPatients() {
-
-
-      const realData = await getAllPatientsFromStore({
-        role,
-        userUnitId,
-        assignedMicroareaCodes: userProfile?.assignedMicroareaCodes,
-        acsName: role === "ACS" ? userProfile?.name : undefined,
-        acsId: role === "ACS" ? userProfile?.uid : undefined,
-      });
+      const [realData, loadedParams] = await Promise.all([
+        getAllPatientsFromStore({
+          role,
+          userUnitId,
+          assignedMicroareaCodes: userProfile?.assignedMicroareaCodes,
+          acsName: role === "ACS" ? userProfile?.name : undefined,
+          acsId: role === "ACS" ? userProfile?.uid : undefined,
+        }),
+        getDcntParametersFromStore(),
+      ]);
       setPatients(realData || []);
+      setDcntParams(loadedParams);
       setLoadingPatients(false);
     }
     loadPatients();
@@ -92,16 +104,11 @@ export default function DashboardPage() {
     return queryString ? `/pacientes?${queryString}` : "/pacientes";
   };
 
-  // Sincronizar filtros automáticos do perfil ACS
+  // Sincronizar filtros automáticos do perfil ACS (mantendo "Todos"/"Todas" para exibir todas as microáreas atribuídas ao ACS)
   useEffect(() => {
     if (role === "ACS") {
-      if (userProfile?.name) {
-        setFilterACS(userProfile.name);
-      }
-      const codes = userProfile?.assignedMicroareaCodes || [];
-      if (codes.length > 0) {
-        setFilterMicroarea(`Microárea ${codes[0]}`);
-      }
+      setFilterACS("Todos");
+      setFilterMicroarea("Todas");
     }
   }, [role, userProfile]);
 
@@ -122,6 +129,11 @@ export default function DashboardPage() {
     )
   ).filter(Boolean).sort();
 
+  const normalizedAcsCodes = (userProfile?.assignedMicroareaCodes || []).map((c) => {
+    const d = String(c || "").replace(/\D/g, "").trim();
+    return d ? d.padStart(2, "0") : String(c || "").trim();
+  });
+
   // Filtragem dos pacientes considerando perfil e unidade
   const filteredPatients = patients.filter((pat: any) => {
     if (role === "GERENTE" && userUnitId) {
@@ -133,56 +145,58 @@ export default function DashboardPage() {
         const pUnitId = pat.unidadeId || "USF-003";
         if (pUnitId !== userUnitId) return false;
       }
-      const acsCodes = userProfile?.assignedMicroareaCodes || [];
-      const patMACode = (pat.microarea || "").replace(/\D/g, "").trim();
-      if (acsCodes.length > 0 && !acsCodes.includes(patMACode)) return false;
+      const rawDigits = (pat.microarea || "").replace(/\D/g, "").trim() || (pat.microareaCodigo || "").replace(/\D/g, "").trim();
+      const patMACode = rawDigits ? rawDigits.padStart(2, "0") : (pat.microareaCodigo || "");
+      if (normalizedAcsCodes.length === 0 || (!normalizedAcsCodes.includes(patMACode) && !(rawDigits && normalizedAcsCodes.includes(rawDigits)))) {
+        return false;
+      }
     }
     if (filterACS !== "Todos" && pat.acsName !== filterACS) return false;
     if (filterMicroarea !== "Todas" && pat.microarea !== filterMicroarea) return false;
     if (filterSex !== "Todos" && pat.sex !== filterSex) return false;
 
-    if (filterAgeGroup === "Idosos (60+)" && pat.age < 60) return false;
-    if (filterAgeGroup === "Adultos (18-59)" && (pat.age < 18 || pat.age >= 60)) return false;
+    const elderlyCutoff = dcntParams.elderlyAgeCutoff ?? 60;
+    if (filterAgeGroup === "Idosos (60+)" && pat.age < elderlyCutoff) return false;
+    if (filterAgeGroup === "Adultos (18-59)" && (pat.age < 18 || pat.age >= elderlyCutoff)) return false;
 
     if (filterCondition === "Hipertensão" && !pat.hasHypertension) return false;
     if (filterCondition === "Diabetes" && !pat.hasDiabetes) return false;
-    if (filterCondition === "Obesidade" && !pat.isObese) return false;
+    if (filterCondition === "Obesidade" && !isObesidade(pat, dcntParams)) return false;
     if (filterCondition === "Tabagismo" && !pat.isSmoker) return false;
 
     return true;
   });
 
-  // Cálculo de Estado Nutricional Mutuamente Exclusivo por IMC
+  // Cálculo de Estado Nutricional Mutuamente Exclusivo por IMC (parametrizado)
   let adequadoCount = 0;
   let sobrepesoCount = 0;
   let obesidadeCount = 0;
   let semInformacaoCount = 0;
 
+  const obesityCutoff = dcntParams.obesityImcCutoff ?? 30;
+  const overweightCutoff = dcntParams.overweightImcCutoff ?? 25;
+
   filteredPatients.forEach((p) => {
     const imc = p.lastWeight?.imc ?? (p as any).imcAtual;
     if (imc == null || typeof imc !== "number" || isNaN(imc) || imc <= 0) {
       semInformacaoCount++;
-    } else if (imc >= 30) {
+    } else if (imc >= obesityCutoff) {
       obesidadeCount++;
-    } else if (imc >= 25) {
+    } else if (imc >= overweightCutoff) {
       sobrepesoCount++;
     } else {
       adequadoCount++;
     }
   });
 
-  // Métricas para os Cards
+  // Métricas para os Cards (parametrizadas)
   const totalCadastrados = filteredPatients.length;
-  const countIdosos = filteredPatients.filter((p) => p.isElderly).length;
+  const countIdosos = filteredPatients.filter((p) => isIdoso(p, dcntParams)).length;
   const countSobrepeso = sobrepesoCount;
   const countObesidade = obesidadeCount;
-  const countPAAlterada = filteredPatients.filter(
-    (p) => p.lastPA && (p.lastPA.systolic >= 140 || p.lastPA.diastolic >= 90)
-  ).length;
-  const countSemPARecente = filteredPatients.filter(
-    (p) => !p.lastPA || new Date(p.lastPA.date) < new Date("2026-01-01")
-  ).length;
-  const countSemAcompanhamento = filteredPatients.filter(isSemVisitaACS).length;
+  const countPAAlterada = filteredPatients.filter((p) => isPAAlterada(p, dcntParams)).length;
+  const countSemPARecente = filteredPatients.filter((p) => isSemPARecente(p, dcntParams)).length;
+  const countSemAcompanhamento = filteredPatients.filter((p) => isSemVisitaACS(p, dcntParams)).length;
   const countBuscaAtivaAlta = filteredPatients.filter((p) => p.priority === "Alta").length;
 
   // Dados dos Gráficos (Categorias Mutuamente Exclusivas)
@@ -193,11 +207,36 @@ export default function DashboardPage() {
     { label: "Sem informação", value: semInformacaoCount, color: "text-zinc-400" },
   ];
 
+  const maxMonthsPA = dcntParams.monthsWithoutPA ?? 6;
   const bpData = [
-    { label: "Acompanhamento recente (< 6 meses)", value: filteredPatients.filter((p) => p.lastPA && new Date(p.lastPA.date) >= new Date("2026-02-01")).length, color: "bg-emerald-600" },
-    { label: "6 a 12 meses", value: filteredPatients.filter((p) => p.lastPA && new Date(p.lastPA.date) < new Date("2026-02-01") && new Date(p.lastPA.date) >= new Date("2025-08-01")).length, color: "bg-amber-500" },
-    { label: "Mais de 12 meses", value: filteredPatients.filter((p) => p.lastPA && new Date(p.lastPA.date) < new Date("2025-08-01")).length, color: "bg-red-600" },
-    { label: "Sem informação", value: countSemPARecente, color: "bg-zinc-400" },
+    {
+      label: `Acompanhamento recente (≤ ${maxMonthsPA} meses)`,
+      value: filteredPatients.filter((p) => p.lastPA?.date && monthsSinceDate(p.lastPA.date) <= maxMonthsPA).length,
+      color: "bg-emerald-600",
+    },
+    {
+      label: `${maxMonthsPA} a 12 meses`,
+      value: filteredPatients.filter((p) => {
+        if (!p.lastPA?.date) return false;
+        const m = monthsSinceDate(p.lastPA.date);
+        return m > maxMonthsPA && m <= 12;
+      }).length,
+      color: "bg-amber-500",
+    },
+    {
+      label: "Mais de 12 meses",
+      value: filteredPatients.filter((p) => {
+        if (!p.lastPA?.date) return false;
+        const m = monthsSinceDate(p.lastPA.date);
+        return m > 12 && m !== 999;
+      }).length,
+      color: "bg-red-600",
+    },
+    {
+      label: "Sem informação",
+      value: filteredPatients.filter((p) => !p.lastPA?.date).length,
+      color: "bg-zinc-400",
+    },
   ];
 
   const conditionsData = [
@@ -305,9 +344,9 @@ export default function DashboardPage() {
             {role === "ACS" ? (
               <div className="mt-1 flex items-center justify-between w-full rounded-lg border border-zinc-300 bg-zinc-100 px-2.5 py-1.5 text-xs font-semibold text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800/80 dark:text-zinc-300">
                 <span>
-                  {userProfile?.assignedMicroareaCodes && userProfile.assignedMicroareaCodes.length > 0
-                    ? `Microárea ${userProfile.assignedMicroareaCodes.join(", ")}`
-                    : "Microárea 56"}
+                  {normalizedAcsCodes.length > 0
+                    ? `Microárea ${normalizedAcsCodes.join(", ")}`
+                    : "Sem microárea atribuída"}
                 </span>
                 <span title="Filtro de microárea fixo para o perfil ACS">🔒</span>
               </div>

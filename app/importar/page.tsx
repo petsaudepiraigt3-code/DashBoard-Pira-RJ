@@ -12,6 +12,7 @@ import {
 } from "@/lib/esus/importer";
 import { getImportHistoryFromStore } from "@/lib/store/imports";
 import { getExistingPatientsMap } from "@/lib/store/patients";
+import { getDcntParametersFromStore } from "@/lib/store/parameters";
 import { getAllActiveUnitsFromStore, HealthUnit } from "@/lib/store/units";
 import { ESUSParseResult, StoreImportRecord } from "@/lib/esus/types";
 import { maskCPF, maskCNS } from "@/lib/esus/normalizer";
@@ -255,9 +256,12 @@ export default function ImportarPage() {
     setImportCompleted(false);
 
     try {
-      const parsedFile = await parseESUSFile(file);
-      const existingPatientsMap = await getExistingPatientsMap();
-      const result = validateAndNormalizeESUSData(parsedFile, existingPatientsMap);
+      const [parsedFile, existingPatientsMap, dcntParams] = await Promise.all([
+        parseESUSFile(file),
+        getExistingPatientsMap(),
+        getDcntParametersFromStore(),
+      ]);
+      const result = validateAndNormalizeESUSData(parsedFile, existingPatientsMap, dcntParams);
       setParseResult(result);
     } catch (err: any) {
       alert(`Erro ao analisar o arquivo: ${err.message || "Formato incompatível"}`);

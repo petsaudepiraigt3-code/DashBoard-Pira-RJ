@@ -2,11 +2,16 @@
 
 import React, { useState, useEffect } from "react";
 import { AppLayout } from "@/components/layout/app-layout";
-import { MOCK_PARAMETERS } from "@/data/mock-data";
 import { DcntParameters } from "@/types/dcnt";
+import {
+  DEFAULT_DCNT_PARAMETERS,
+  getDcntParametersFromStore,
+  saveDcntParametersInStore,
+} from "@/lib/store/parameters";
 import {
   getAllActiveUnitsFromStore,
   createHealthUnit,
+  ensureUnitMicroareaInStore,
   getMicroareasByUnit,
   assignAcsToMicroarea,
   getAcsUsersByUnit,
@@ -68,7 +73,11 @@ export default function ConfiguracoesPage() {
   const { role, userUnitId, userUnitNome, userProfile } = useAuth();
 
   const [activeTab, setActiveTab] = useState<"unidades" | "microareas" | "acs" | "usuarios" | "cargas" | "diagnostico" | "parametros">("microareas");
-  const [params, setParams] = useState<DcntParameters>(MOCK_PARAMETERS);
+  const [params, setParams] = useState<DcntParameters>(DEFAULT_DCNT_PARAMETERS);
+  const [isSavingParams, setIsSavingParams] = useState(false);
+  const [paramsSavedMessage, setParamsSavedMessage] = useState<string | null>(null);
+  const [newMicroareaCode, setNewMicroareaCode] = useState("");
+  const [isCreatingMicroarea, setIsCreatingMicroarea] = useState(false);
 
   // Unidades de Saúde / Áreas
   const [units, setUnits] = useState<HealthUnit[]>([]);
@@ -303,11 +312,51 @@ export default function ConfiguracoesPage() {
     }
   };
 
+  const fetchParameters = async () => {
+    try {
+      const loaded = await getDcntParametersFromStore();
+      setParams(loaded);
+    } catch (err) {
+      // Ignorar
+    }
+  };
+
+  const handleSaveParameters = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingParams(true);
+    setParamsSavedMessage(null);
+    try {
+      await saveDcntParametersInStore(params);
+      setParamsSavedMessage("✓ Parâmetros clínicos e de Busca Ativa salvos com sucesso no Supabase!");
+      setTimeout(() => setParamsSavedMessage(null), 4000);
+    } catch (err: any) {
+      alert(`Erro ao salvar parâmetros: ${err.message}`);
+    } finally {
+      setIsSavingParams(false);
+    }
+  };
+
+  const handleCreateMicroarea = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newMicroareaCode.trim() || !selectedUnitId) return;
+    setIsCreatingMicroarea(true);
+    try {
+      await ensureUnitMicroareaInStore(selectedUnitId, newMicroareaCode.trim());
+      setNewMicroareaCode("");
+      await fetchUnitData(selectedUnitId);
+    } catch (err: any) {
+      alert(`Erro ao cadastrar microárea: ${err.message}`);
+    } finally {
+      setIsCreatingMicroarea(false);
+    }
+  };
+
   useEffect(() => {
     if (!userProfile) return;
     fetchUnits();
     fetchAllUsers();
     fetchCargas();
+    fetchParameters();
   }, [userProfile?.uid]);
 
   useEffect(() => {
@@ -457,13 +506,16 @@ export default function ConfiguracoesPage() {
   // Abrir Modal de Vínculo de Microáreas para o ACS
   const handleOpenAssignMicroareas = (acs: ReconciledUser) => {
     setAssignAcsTarget(acs);
-    const assignedMAs = microareas.filter((m) => m.acsId === acs.uid).map((m) => m.id);
+    const assignedMAs = microareas
+      .filter((m) => m.acsId && (m.acsId === acs.uid || m.acsId === acs.authUid || m.acsId === acs.docId))
+      .map((m) => m.id);
     setSelectedMicroareaIdsForAcs(assignedMAs);
   };
 
   // Alternar checkbox de Microárea para o ACS
   const handleToggleMicroareaCheckbox = async (ma: MicroareaDoc) => {
     if (!assignAcsTarget) return;
+    const targetAcsUid = assignAcsTarget.authUid || assignAcsTarget.uid;
 
     const isCurrentlyAssigned = selectedMicroareaIdsForAcs.includes(ma.id);
 
@@ -478,8 +530,15 @@ export default function ConfiguracoesPage() {
       }
     } else {
       // Se a microárea já estiver atribuída a outro ACS, pedir confirmação de transferência
-      if (ma.acsId && ma.acsId !== assignAcsTarget.uid) {
-        const existingAcsObj = acsUsers.find((a) => a.uid === ma.acsId);
+      if (
+        ma.acsId &&
+        ma.acsId !== targetAcsUid &&
+        ma.acsId !== assignAcsTarget.uid &&
+        ma.acsId !== assignAcsTarget.docId
+      ) {
+        const existingAcsObj = acsUsers.find(
+          (a) => a.uid === ma.acsId || a.authUid === ma.acsId || a.docId === ma.acsId
+        );
         setTransferConflictPrompt({
           microareaId: ma.id,
           microareaNome: ma.nome,
@@ -490,7 +549,7 @@ export default function ConfiguracoesPage() {
 
       // Atribuir diretamente
       try {
-        await assignAcsToMicroarea(ma.id, assignAcsTarget.uid, assignAcsTarget.nome, userProfile?.uid || "gerente");
+        await assignAcsToMicroarea(ma.id, targetAcsUid, assignAcsTarget.nome, userProfile?.uid || "gerente");
         setSelectedMicroareaIdsForAcs((prev) => [...prev, ma.id]);
         await fetchUnitData(selectedUnitId);
       } catch (err: any) {
@@ -502,10 +561,11 @@ export default function ConfiguracoesPage() {
   // Confirmar Transferência de Responsabilidade
   const handleConfirmTransferMicroarea = async () => {
     if (!transferConflictPrompt || !assignAcsTarget) return;
+    const targetAcsUid = assignAcsTarget.authUid || assignAcsTarget.uid;
     try {
       await assignAcsToMicroarea(
         transferConflictPrompt.microareaId,
-        assignAcsTarget.uid,
+        targetAcsUid,
         assignAcsTarget.nome,
         userProfile?.uid || "gerente"
       );
@@ -521,10 +581,13 @@ export default function ConfiguracoesPage() {
   const handleSaveMicroareaAcs = async () => {
     if (!editingMicroarea) return;
     try {
-      const selectedAcsObj = acsUsers.find((a) => a.uid === selectedAcsForMicroarea);
+      const selectedAcsObj = acsUsers.find(
+        (a) => a.uid === selectedAcsForMicroarea || a.authUid === selectedAcsForMicroarea
+      );
+      const targetAcsUid = selectedAcsObj ? selectedAcsObj.authUid || selectedAcsObj.uid : null;
       await assignAcsToMicroarea(
         editingMicroarea.id,
-        selectedAcsForMicroarea || null,
+        targetAcsUid,
         selectedAcsObj?.nome || null,
         userProfile?.uid || "gerente"
       );
@@ -764,44 +827,42 @@ export default function ConfiguracoesPage() {
         </button>
 
         {(role as string) === "ADMIN" && (
-          <>
-            <button
-              onClick={() => setActiveTab("usuarios")}
-              className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition-all cursor-pointer ${
-                activeTab === "usuarios"
-                  ? "border-blue-600 text-blue-600 dark:border-blue-500 dark:text-blue-400"
-                  : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
-              }`}
-            >
-              <Users className="h-4 w-4" />
-              <span>Usuários e Perfis (ADMIN)</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab("diagnostico")}
-              className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition-all cursor-pointer ${
-                activeTab === "diagnostico"
-                  ? "border-blue-600 text-blue-600 dark:border-blue-500 dark:text-blue-400"
-                  : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
-              }`}
-            >
-              <ShieldCheck className="h-4 w-4" />
-              <span>Diagnóstico</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab("parametros")}
-              className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition-all cursor-pointer ${
-                activeTab === "parametros"
-                  ? "border-blue-600 text-blue-600 dark:border-blue-500 dark:text-blue-400"
-                  : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
-              }`}
-            >
-              <Sliders className="h-4 w-4" />
-              <span>Parâmetros DCNT</span>
-            </button>
-          </>
+          <button
+            onClick={() => setActiveTab("usuarios")}
+            className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition-all cursor-pointer ${
+              activeTab === "usuarios"
+                ? "border-blue-600 text-blue-600 dark:border-blue-500 dark:text-blue-400"
+                : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+            }`}
+          >
+            <Users className="h-4 w-4" />
+            <span>Usuários e Perfis (ADMIN)</span>
+          </button>
         )}
+
+        <button
+          onClick={() => setActiveTab("diagnostico")}
+          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition-all cursor-pointer ${
+            activeTab === "diagnostico"
+              ? "border-blue-600 text-blue-600 dark:border-blue-500 dark:text-blue-400"
+              : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+          }`}
+        >
+          <ShieldCheck className="h-4 w-4" />
+          <span>Diagnóstico</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab("parametros")}
+          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition-all cursor-pointer ${
+            activeTab === "parametros"
+              ? "border-blue-600 text-blue-600 dark:border-blue-500 dark:text-blue-400"
+              : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+          }`}
+        >
+          <Sliders className="h-4 w-4" />
+          <span>Parâmetros DCNT</span>
+        </button>
       </div>
 
       {/* SELETOR DE UNIDADE ATIVA (ADMIN OU FIXO GERENTE) */}
@@ -837,15 +898,32 @@ export default function ConfiguracoesPage() {
       {/* ABA: MICROÁREAS DA UNIDADE */}
       {activeTab === "microareas" && (
         <div className="space-y-4 my-4">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <h2 className="text-sm font-bold text-zinc-900 dark:text-zinc-100">
                 Microáreas da Unidade ({selectedUnitObj?.nome || "USF Arrozal 3"})
               </h2>
               <p className="text-xs text-zinc-500">
-                Microáreas identificadas da planilha do e-SUS APS e seus ACS responsáveis.
+                Microáreas identificadas da planilha do e-SUS APS (ou pré-cadastradas) e seus ACS responsáveis. Quando um ACS é vinculado a uma microárea, todos os pacientes dessa microárea passam automaticamente para a carteira dele.
               </p>
             </div>
+            <form onSubmit={handleCreateMicroarea} className="flex items-center gap-2">
+              <input
+                type="text"
+                placeholder="Ex: 56 ou Microárea 56"
+                value={newMicroareaCode}
+                onChange={(e) => setNewMicroareaCode(e.target.value)}
+                className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100"
+              />
+              <button
+                type="submit"
+                disabled={isCreatingMicroarea || !newMicroareaCode.trim()}
+                className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-bold text-white shadow-2xs hover:bg-blue-700 cursor-pointer disabled:opacity-50"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                <span>Cadastrar Microárea</span>
+              </button>
+            </form>
           </div>
 
           {loadingMicroareas ? (
@@ -870,7 +948,10 @@ export default function ConfiguracoesPage() {
                 </thead>
                 <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800 font-medium">
                   {microareas.map((m) => {
-                    const assignedACS = acsUsers.find((a) => a.uid === m.acsId);
+                    const assignedACS = acsUsers.find(
+                      (a) => a.uid === m.acsId || a.authUid === m.acsId || a.docId === m.acsId
+                    );
+                    const acsDisplayName = assignedACS?.nome || m.acsNome || null;
                     const pCount = patientCounts[m.codigo] || 0;
                     return (
                       <tr key={m.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-800/40">
@@ -890,10 +971,10 @@ export default function ConfiguracoesPage() {
                           </span>
                         </td>
                         <td className="px-4 py-3 font-bold text-zinc-800 dark:text-zinc-200">
-                          {assignedACS ? (
+                          {acsDisplayName ? (
                             <span className="text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
                               <UserCheck className="h-3.5 w-3.5" />
-                              {assignedACS.nome}
+                              {acsDisplayName}
                             </span>
                           ) : m.tipoMicroarea === "NORMAL" ? (
                             <span className="text-amber-600 dark:text-amber-400 font-normal">Sem ACS atribuído</span>
@@ -986,7 +1067,9 @@ export default function ConfiguracoesPage() {
                 </thead>
                 <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800 font-medium">
                   {acsUsers.map((a) => {
-                    const assignedMAs = microareas.filter((m) => m.acsId === a.uid);
+                    const assignedMAs = microareas.filter(
+                      (m) => m.acsId && (m.acsId === a.uid || m.acsId === a.authUid || m.acsId === a.docId)
+                    );
                     let totalPatientsForAcs = 0;
                     assignedMAs.forEach((m) => {
                       totalPatientsForAcs += patientCounts[m.codigo] || 0;
@@ -1369,6 +1452,338 @@ export default function ConfiguracoesPage() {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {/* ABA: DIAGNÓSTICO E RECONCILIAÇÃO DE VÍNCULOS */}
+      {activeTab === "diagnostico" && (
+        <div className="space-y-4 my-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-bold text-zinc-900 dark:text-zinc-100">
+                Diagnóstico Territorial e Vínculo Paciente ↔ Microárea ↔ ACS
+              </h2>
+              <p className="text-xs text-zinc-500">
+                Auditoria em tempo real das microáreas, cobertura de ACS e sincronização dos pacientes importados do e-SUS APS.
+              </p>
+            </div>
+            <button
+              onClick={handleRunMigration}
+              disabled={isMigrating}
+              className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3.5 py-2 text-xs font-bold text-white shadow-2xs hover:bg-blue-700 cursor-pointer disabled:opacity-50"
+            >
+              {isMigrating ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              <span>Sincronizar Pacientes e Microáreas</span>
+            </button>
+          </div>
+
+          {migrationResult && (
+            <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-xs font-semibold text-blue-900 dark:border-blue-900/50 dark:bg-blue-950/40 dark:text-blue-200">
+              {migrationResult}
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+              <span className="text-[11px] font-semibold text-zinc-500">Total de Pacientes na Unidade</span>
+              <p className="text-2xl font-extrabold text-zinc-900 dark:text-zinc-100 mt-1">
+                {unitDiag?.totalPacientes ?? 0}
+              </p>
+            </div>
+            <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+              <span className="text-[11px] font-semibold text-zinc-500">Microáreas Mapeadas</span>
+              <p className="text-2xl font-extrabold text-blue-600 mt-1">
+                {unitDiag?.totalMicroareas ?? microareas.length}
+              </p>
+            </div>
+            <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+              <span className="text-[11px] font-semibold text-zinc-500">Microáreas sem ACS</span>
+              <p className="text-2xl font-extrabold text-amber-600 mt-1">
+                {unitDiag?.microareasSemACS ?? 0}
+              </p>
+            </div>
+            <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+              <span className="text-[11px] font-semibold text-zinc-500">Pacientes Sem Microárea</span>
+              <p className="text-2xl font-extrabold text-red-600 mt-1">
+                {unitDiag?.pacientesSemMicroarea ?? 0}
+              </p>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900 space-y-2 text-xs text-zinc-600 dark:text-zinc-300">
+            <h3 className="font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
+              <Info className="h-4 w-4 text-blue-600" />
+              Como funciona o vínculo ACS ↔ Microárea ↔ Pacientes
+            </h3>
+            <p>
+              1. <strong>Importação do CSV e-SUS APS:</strong> Os pacientes são importados com sua coluna{" "}
+              <code>Microárea</code> (ex.: <code>&quot;56&quot;</code> → <code>Microárea 56</code>), mesmo que o ACS daquela microárea ainda não tenha sido cadastrado.
+            </p>
+            <p>
+              2. <strong>Cadastro e Associação do ACS:</strong> Quando você souber qual ACS é responsável por cada microárea, basta cadastrá-lo na aba <strong>Equipe de ACS</strong> e vinculá-lo à sua microárea na aba <strong>Microáreas</strong>.
+            </p>
+            <p>
+              3. <strong>Visualização Automática por Login:</strong> Assim que o ACS fizer login, o sistema filtra automaticamente o Dashboard, a lista de Pacientes e o Território para exibir exclusivamente os pacientes da(s) microárea(s) sob responsabilidade daquele ACS.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* ABA: PARÂMETROS CLÍNICOS E DE BUSCA ATIVA DCNT */}
+      {activeTab === "parametros" && (
+        <div className="space-y-4 my-4">
+          <div>
+            <h2 className="text-sm font-bold text-zinc-900 dark:text-zinc-100">
+              Parâmetros Clínicos e Regras de Busca Ativa (DCNT)
+            </h2>
+            <p className="text-xs text-zinc-500">
+              Configure os pontos de corte, prazos de acompanhamento e pesos de prioridade utilizados pelo Dashboard, Filtros e Importador do e-SUS APS.
+            </p>
+          </div>
+
+          {paramsSavedMessage && (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs font-bold text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-300">
+              {paramsSavedMessage}
+            </div>
+          )}
+
+          <form onSubmit={handleSaveParameters} className="space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Prazos de Monitoramento */}
+              <div className="rounded-xl border border-zinc-200 bg-white p-5 space-y-4 dark:border-zinc-800 dark:bg-zinc-900">
+                <h3 className="text-xs font-extrabold uppercase tracking-wider text-blue-600 dark:text-blue-400">
+                  1. Prazos de Acompanhamento (Meses)
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                  <div>
+                    <label className="block font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                      Máx. Meses sem PA
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={36}
+                      value={params.monthsWithoutPA}
+                      onChange={(e) => setParams({ ...params, monthsWithoutPA: Number(e.target.value) })}
+                      className="w-full rounded-lg border border-zinc-300 p-2 font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                      Máx. Meses sem Visita ACS
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={24}
+                      value={params.monthsWithoutVisit}
+                      onChange={(e) => setParams({ ...params, monthsWithoutVisit: Number(e.target.value) })}
+                      className="w-full rounded-lg border border-zinc-300 p-2 font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                      Máx. Meses sem Consulta Médica
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={36}
+                      value={params.monthsWithoutMedicalCare ?? 6}
+                      onChange={(e) => setParams({ ...params, monthsWithoutMedicalCare: Number(e.target.value) })}
+                      className="w-full rounded-lg border border-zinc-300 p-2 font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Pontos de Corte Clínicos */}
+              <div className="rounded-xl border border-zinc-200 bg-white p-5 space-y-4 dark:border-zinc-800 dark:bg-zinc-900">
+                <h3 className="text-xs font-extrabold uppercase tracking-wider text-blue-600 dark:text-blue-400">
+                  2. Pontos de Corte Clínicos e Antropométricos
+                </h3>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
+                  <div>
+                    <label className="block font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                      PA Sistólica Alterada (≥ mmHg)
+                    </label>
+                    <input
+                      type="number"
+                      min={100}
+                      max={220}
+                      value={params.systolicAlteradaCutoff ?? 140}
+                      onChange={(e) => setParams({ ...params, systolicAlteradaCutoff: Number(e.target.value) })}
+                      className="w-full rounded-lg border border-zinc-300 p-2 font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                      PA Diastólica Alterada (≥ mmHg)
+                    </label>
+                    <input
+                      type="number"
+                      min={60}
+                      max={140}
+                      value={params.diastolicAlteradaCutoff ?? 90}
+                      onChange={(e) => setParams({ ...params, diastolicAlteradaCutoff: Number(e.target.value) })}
+                      className="w-full rounded-lg border border-zinc-300 p-2 font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                      Idade Idoso (≥ anos)
+                    </label>
+                    <input
+                      type="number"
+                      min={50}
+                      max={80}
+                      value={params.elderlyAgeCutoff}
+                      onChange={(e) => setParams({ ...params, elderlyAgeCutoff: Number(e.target.value) })}
+                      className="w-full rounded-lg border border-zinc-300 p-2 font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                      IMC Sobrepeso (≥ kg/m²)
+                    </label>
+                    <input
+                      type="number"
+                      step="0.5"
+                      min={20}
+                      max={35}
+                      value={params.overweightImcCutoff}
+                      onChange={(e) => setParams({ ...params, overweightImcCutoff: Number(e.target.value) })}
+                      className="w-full rounded-lg border border-zinc-300 p-2 font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                      IMC Obesidade (≥ kg/m²)
+                    </label>
+                    <input
+                      type="number"
+                      step="0.5"
+                      min={25}
+                      max={45}
+                      value={params.obesityImcCutoff}
+                      onChange={(e) => setParams({ ...params, obesityImcCutoff: Number(e.target.value) })}
+                      className="w-full rounded-lg border border-zinc-300 p-2 font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Pesos da Pontuação de Prioridade */}
+            <div className="rounded-xl border border-zinc-200 bg-white p-5 space-y-4 dark:border-zinc-800 dark:bg-zinc-900">
+              <h3 className="text-xs font-extrabold uppercase tracking-wider text-blue-600 dark:text-blue-400">
+                3. Pesos da Pontuação de Busca Ativa
+              </h3>
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
+                <div>
+                  <label className="block font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                    Peso: PA Alterada
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={params.priorityWeights.alteredPA}
+                    onChange={(e) =>
+                      setParams({
+                        ...params,
+                        priorityWeights: { ...params.priorityWeights, alteredPA: Number(e.target.value) },
+                      })
+                    }
+                    className="w-full rounded-lg border border-zinc-300 p-2 font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                    Peso: PA Desatualizada
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={10}
+                    value={params.priorityWeights.outdatedPA ?? 2}
+                    onChange={(e) =>
+                      setParams({
+                        ...params,
+                        priorityWeights: { ...params.priorityWeights, outdatedPA: Number(e.target.value) },
+                      })
+                    }
+                    className="w-full rounded-lg border border-zinc-300 p-2 font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                    Peso: Sem Visita ACS
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={10}
+                    value={params.priorityWeights.outdatedVisit}
+                    onChange={(e) =>
+                      setParams({
+                        ...params,
+                        priorityWeights: { ...params.priorityWeights, outdatedVisit: Number(e.target.value) },
+                      })
+                    }
+                    className="w-full rounded-lg border border-zinc-300 p-2 font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                    Peso: Idoso
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={10}
+                    value={params.priorityWeights.elderly}
+                    onChange={(e) =>
+                      setParams({
+                        ...params,
+                        priorityWeights: { ...params.priorityWeights, elderly: Number(e.target.value) },
+                      })
+                    }
+                    className="w-full rounded-lg border border-zinc-300 p-2 font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                    Peso: Obesidade
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={10}
+                    value={params.priorityWeights.obesity ?? 1}
+                    onChange={(e) =>
+                      setParams({
+                        ...params,
+                        priorityWeights: { ...params.priorityWeights, obesity: Number(e.target.value) },
+                      })
+                    }
+                    className="w-full rounded-lg border border-zinc-300 p-2 font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end">
+              <button
+                type="submit"
+                disabled={isSavingParams}
+                className="flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-xs font-bold text-white shadow-sm hover:bg-blue-700 cursor-pointer disabled:opacity-50"
+              >
+                {isSavingParams ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                <span>Salvar Parâmetros no Supabase</span>
+              </button>
+            </div>
+          </form>
         </div>
       )}
 

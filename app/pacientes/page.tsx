@@ -3,7 +3,8 @@
 import React, { useState, useEffect, useMemo, Suspense } from "react";
 import { AppLayout } from "@/components/layout/app-layout";
 import { getAllPatientsFromStore } from "@/lib/store/patients";
-import { Patient } from "@/types/dcnt";
+import { DEFAULT_DCNT_PARAMETERS, getDcntParametersFromStore } from "@/lib/store/parameters";
+import { DcntParameters, Patient } from "@/types/dcnt";
 import { BadgePriority } from "@/components/ui/badge-priority";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -51,6 +52,7 @@ function PacientesContent() {
 
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(true);
+  const [dcntParams, setDcntParams] = useState<DcntParameters>(DEFAULT_DCNT_PARAMETERS);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [filterACS, setFilterACS] = useState(paramACS || "Todos");
@@ -75,15 +77,18 @@ function PacientesContent() {
   const loadData = async () => {
     setLoading(true);
 
-
-    const realData = await getAllPatientsFromStore({
-      role,
-      userUnitId,
-      assignedMicroareaCodes: userProfile?.assignedMicroareaCodes,
-      acsName: role === "ACS" ? userProfile?.name : undefined,
-      acsId: role === "ACS" ? userProfile?.uid : undefined,
-    });
+    const [realData, loadedParams] = await Promise.all([
+      getAllPatientsFromStore({
+        role,
+        userUnitId,
+        assignedMicroareaCodes: userProfile?.assignedMicroareaCodes,
+        acsName: role === "ACS" ? userProfile?.name : undefined,
+        acsId: role === "ACS" ? userProfile?.uid : undefined,
+      }),
+      getDcntParametersFromStore(),
+    ]);
     setPatients(realData || []);
+    setDcntParams(loadedParams);
     setLoading(false);
   };
 
@@ -93,15 +98,15 @@ function PacientesContent() {
 
   useEffect(() => {
     if (role === "ACS") {
-      if (userProfile?.name) {
-        setFilterACS(userProfile.name);
-      }
-      const codes = userProfile?.assignedMicroareaCodes || [];
-      if (codes.length > 0) {
-        setFilterMicroarea(`Microárea ${codes[0]}`);
-      }
+      setFilterACS("Todos");
+      setFilterMicroarea("Todas");
     }
   }, [role, userProfile]);
+
+  const normalizedAcsCodes = (userProfile?.assignedMicroareaCodes || []).map((c) => {
+    const d = String(c || "").replace(/\D/g, "").trim();
+    return d ? d.padStart(2, "0") : String(c || "").trim();
+  });
 
   // Lista dinâmica de ACS e Microáreas da unidade para filtros do Gerente e Admin
   const availableACSList = Array.from(
@@ -130,9 +135,11 @@ function PacientesContent() {
         const pUnitId = (p as any).unidadeId || "USF-003";
         if (pUnitId !== userUnitId) return false;
       }
-      const acsCodes = userProfile?.assignedMicroareaCodes || [];
-      const patMACode = (p.microarea || "").replace(/\D/g, "").trim();
-      if (acsCodes.length > 0 && !acsCodes.includes(patMACode)) return false;
+      const rawDigits = (p.microarea || "").replace(/\D/g, "").trim() || ((p as any).microareaCodigo || "").replace(/\D/g, "").trim();
+      const patMACode = rawDigits ? rawDigits.padStart(2, "0") : ((p as any).microareaCodigo || "");
+      if (normalizedAcsCodes.length === 0 || (!normalizedAcsCodes.includes(patMACode) && !(rawDigits && normalizedAcsCodes.includes(rawDigits)))) {
+        return false;
+      }
     }
 
     if (searchQuery.trim() !== "") {
@@ -148,12 +155,12 @@ function PacientesContent() {
     if (filterSex !== "Todos" && p.sex !== filterSex) return false;
 
     // Filtros específicos vindos via Query String do Dashboard
-    if (activeFilter === "idosos" && !isIdoso(p)) return false;
-    if (activeFilter === "sobrepeso" && !isSobrepeso(p)) return false;
-    if (activeFilter === "obesidade" && !isObesidade(p)) return false;
-    if (activeFilter === "pa-alterada" && !isPAAlterada(p)) return false;
-    if (activeFilter === "sem-pa-recente" && !isSemPARecente(p)) return false;
-    if (activeFilter === "sem-visita-acs" && !isSemVisitaACS(p)) return false;
+    if (activeFilter === "idosos" && !isIdoso(p, dcntParams)) return false;
+    if (activeFilter === "sobrepeso" && !isSobrepeso(p, dcntParams)) return false;
+    if (activeFilter === "obesidade" && !isObesidade(p, dcntParams)) return false;
+    if (activeFilter === "pa-alterada" && !isPAAlterada(p, dcntParams)) return false;
+    if (activeFilter === "sem-pa-recente" && !isSemPARecente(p, dcntParams)) return false;
+    if (activeFilter === "sem-visita-acs" && !isSemVisitaACS(p, dcntParams)) return false;
     if (activeFilter === "busca-ativa-prioritaria" && !isBuscaAtivaPrioritaria(p)) return false;
 
     return true;
@@ -216,9 +223,9 @@ function PacientesContent() {
               </div>
               <div className="rounded-lg border border-zinc-300 bg-zinc-100 px-3 py-1.5 text-xs font-semibold text-zinc-700 flex items-center gap-1.5 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
                 <span>
-                  {userProfile?.assignedMicroareaCodes && userProfile.assignedMicroareaCodes.length > 0
-                    ? `Microárea ${userProfile.assignedMicroareaCodes.join(", ")}`
-                    : "Microárea 56"}
+                  {normalizedAcsCodes.length > 0
+                    ? `Microárea ${normalizedAcsCodes.join(", ")}`
+                    : "Sem microárea atribuída"}
                 </span>
                 <span title="Microárea atribuída">🔒</span>
               </div>

@@ -69,3 +69,98 @@ test('store paginates beyond 1,000 documents and propagates write errors', async
  h.fail('append_patient_action');await assert.rejects(h.load('lib/store/patients.ts').savePatientActionInStore('p-0001',{acsId:h.ids.acs,patientId:'p-0001',tipoAcao:'Visita Domiciliar',dataAcao:'2026-11-08'},undefined,undefined,'ACS'));
  } finally {await h.close();}
 });
+
+test('34-column e-SUS CSV mapping, DCNT parameterization, and deferred ACS microarea linkage', async () => {
+ const h=await harness();try {
+ await h.as('manager');
+ const mappers=h.load('lib/esus/mappers.ts');
+ const validator=h.load('lib/esus/validator.ts');
+ const importer=h.load('lib/esus/importer.ts');
+ const units=h.load('lib/store/units.ts');
+ const patientsStore=h.load('lib/store/patients.ts');
+ const paramsStore=h.load('lib/store/parameters.ts');
+ const headers=[
+  'Nome','Data de nascimento','Idade','Sexo','Identidade de gênero','Raça/cor',
+  'Beneficiário do programa Bolsa Família','Vigência do programa Bolsa Família','CPF','CNS',
+  'Telefone celular','Telefone residencial','Telefone de contato','Microárea','Rua','Número',
+  'Complemento','Bairro','Município','UF','CEP','Dias desde o último atendimento médico',
+  'Meses desde o último atendimento médico','Dias desde o último atendimento de enfermagem',
+  'Meses desde o último atendimento de enfermagem','Dias desde o último atendimento odontológico',
+  'Meses desde o último atendimento odontológico','Dias desde a última visita domiciliar',
+  'Meses desde a última visita domiciliar','Última medição de peso','Última medição de altura',
+  'Data da última medição de peso e altura','Última medição de pressão arterial','Data da última medição de pressão arterial'
+ ];
+ const values=[
+  'ADENILTON MALAQUIAS IDALINO','09/02/1971','55 anos e 8 meses e 25 dias','Masculino','-','PARDA',
+  'Não','-','032.975.037-26','704607685220220','(24) 99951-4115','-','-','56','Seis - loteamento fraternidade','27',
+  '-','ARROZAL','Piraí','RJ','27185-000','24','2','8','7','-','-','20','0','90,60','172,00','10/08/2026','132/82','10/08/2026'
+ ];
+ const rawRow=Object.fromEntries(headers.map((k,i)=>[k,values[i]]));
+ const {mappedColumns,unrecognizedColumns}=mappers.mapHeaders(headers);
+ assert.equal(unrecognizedColumns.length,0);
+ assert.equal(Object.keys(mappedColumns).length,34);
+ await paramsStore.saveDcntParametersInStore({...paramsStore.DEFAULT_DCNT_PARAMETERS,systolicAlteradaCutoff:130});
+ const customParams=await paramsStore.getDcntParametersFromStore();
+ assert.equal(customParams.systolicAlteradaCutoff,130);
+ const parsed=validator.validateAndNormalizeESUSData({headerRowIndex:1,headersFound:headers,mappedColumns,unrecognizedColumns,rawRows:[rawRow]},new Map(),customParams);
+ assert.equal(parsed.validRowsCount,1);
+ const norm=parsed.rows[0].normalizedData;
+ assert.equal(norm.idade,55);
+ assert.equal(norm.telefoneNormalizado,'24999514115');
+ assert.equal(norm.microarea,'Microárea 56');
+ assert.equal(norm.racaCor,'PARDA');
+ assert.equal(norm.beneficiarioBolsaFamilia,false);
+ assert.equal(norm.priority,'Alta');
+ await importer.executeESUSImportToStore(parsed,'arrozal.csv','2 KB','manager','u1','Unidade',undefined,'GERENTE','u1');
+ await h.as('acs');
+ const beforeLink=await patientsStore.getAllPatientsFromStore({role:'ACS',userUnitId:'u1',assignedMicroareaCodes:['01']});
+ assert.equal(beforeLink.length,0);
+ await h.as('manager');
+ await units.assignAcsToMicroarea('ma_u1_56',h.ids.acs,'ACS Arrozal','manager');
+ await h.as('acs');
+ const afterLink=await patientsStore.getAllPatientsFromStore({role:'ACS',userUnitId:'u1',assignedMicroareaCodes:['01','56']});
+ assert.equal(afterLink.length,1);
+ assert.equal(afterLink[0].name,'ADENILTON MALAQUIAS IDALINO');
+ assert.equal(afterLink[0].phone,'24999514115');
+ assert.equal(afterLink[0].acsName,'ACS Arrozal');
+ assert.equal(afterLink[0].street,'Seis - loteamento fraternidade');
+ assert.ok(afterLink[0].lastMedicalApptDate);
+ await h.db.exec('set role service_role');
+ const relPat=(await h.db.query("select * from public.paciente where cpf='03297503726'")).rows[0];
+ assert.ok(relPat);
+ assert.equal(relPat.nome,'ADENILTON MALAQUIAS IDALINO');
+ assert.equal(relPat.idade,55);
+ assert.equal(relPat.raca_cor,'PARDA');
+ assert.equal(relPat.beneficiario_bolsa_familia,false);
+ assert.equal(relPat.telefone_celular,'24999514115');
+ assert.equal(relPat.microarea,56);
+ assert.equal(relPat.microarea_codigo,'56');
+ assert.equal(relPat.acs_nome,'ACS Arrozal');
+ assert.equal(relPat.rua,'Seis - loteamento fraternidade');
+ assert.equal(relPat.numero,'27');
+ assert.equal(relPat.bairro,'ARROZAL');
+ assert.equal(relPat.municipio,'Piraí');
+ assert.equal(relPat.uf,'RJ');
+ assert.equal(relPat.cep,'27185-000');
+ assert.equal(relPat.dias_ultimo_atendimento_medico,24);
+ assert.equal(relPat.meses_ultimo_atendimento_medico,2);
+ assert.equal(relPat.dias_ultimo_atendimento_enfermagem,8);
+ assert.equal(relPat.meses_ultimo_atendimento_enfermagem,7);
+ assert.equal(relPat.dias_ultima_visita_domiciliar,20);
+ assert.equal(relPat.meses_ultima_visita_domiciliar,0);
+ assert.equal(Number(relPat.peso_atual),90.6);
+ assert.equal(Number(relPat.altura_atual),1.72);
+ assert.equal(relPat.pressao_sistolica_atual,132);
+ assert.equal(relPat.pressao_diastolica_atual,82);
+ const relPa=(await h.db.query('select * from public.afericao_pressao where id_paciente=$1',[relPat.id_paciente])).rows;
+ assert.equal(relPa.length,1);
+ assert.equal(relPa[0].pressao_sistolica,132);
+ const relMed=(await h.db.query('select * from public.afericao_medidas where id_paciente=$1',[relPat.id_paciente])).rows;
+ assert.equal(relMed.length,1);
+ assert.equal(Number(relMed[0].peso),90.6);
+ const relAtt=(await h.db.query('select * from public.atendimento where id_paciente=$1',[relPat.id_paciente])).rows;
+ assert.ok(relAtt.length>=3);
+ const relParams=(await h.db.query("select * from public.parametros_dcnt where id='dcnt'")).rows[0];
+ assert.equal(relParams.pa_sistolica_alterada,130);
+ } finally {await h.close();}
+});

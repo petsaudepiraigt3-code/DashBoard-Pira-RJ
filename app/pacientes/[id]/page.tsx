@@ -2,7 +2,12 @@
 
 import React, { use, useState, useEffect } from "react";
 import { AppLayout } from "@/components/layout/app-layout";
-import { getAllPatientsFromStore, getPatientActionsFromStore, getPatientHistorySnapshotsFromStore } from "@/lib/store/patients";
+import {
+  getAllPatientsFromStore,
+  getPatientActionsFromStore,
+  getPatientHistorySnapshotsFromStore,
+  updatePatientConditionsInStore,
+} from "@/lib/store/patients";
 import { Patient, PatientActionRecord, PatientCargaSnapshot } from "@/types/dcnt";
 import { useAuth } from "@/context/auth-context";
 import { BadgePriority } from "@/components/ui/badge-priority";
@@ -91,14 +96,36 @@ export default function PacienteDetalhePage({
   const lastVisitaDomiciliar = allActions.find((act) => act.tipoAcao === "Visita Domiciliar");
 
   // Validação estrita de escopo para perfil ACS
-  const acsCodes = userProfile?.assignedMicroareaCodes || [];
-  const patMACode = (patient?.microarea || "").replace(/\D/g, "").trim();
+  const normalizedAcsCodes = (userProfile?.assignedMicroareaCodes || []).map((c) => {
+    const d = String(c || "").replace(/\D/g, "").trim();
+    return d ? d.padStart(2, "0") : String(c || "").trim();
+  });
+  const rawDigits = (patient?.microarea || "").replace(/\D/g, "").trim() || (patient?.microareaCodigo || "").replace(/\D/g, "").trim();
+  const patMACode = rawDigits ? rawDigits.padStart(2, "0") : (patient?.microareaCodigo || "");
   const patUnitId = (patient as any)?.unidadeId || "USF-003";
 
   const isAccessAllowed =
     role === "ADMIN" ||
     (role === "GERENTE" && (!userUnitId || patUnitId === userUnitId)) ||
-    (role === "ACS" && (!userUnitId || patUnitId === userUnitId) && (acsCodes.length === 0 || acsCodes.includes(patMACode)));
+    (role === "ACS" &&
+      (!userUnitId || patUnitId === userUnitId) &&
+      normalizedAcsCodes.length > 0 &&
+      (normalizedAcsCodes.includes(patMACode) || (!!rawDigits && normalizedAcsCodes.includes(rawDigits))));
+
+  const handleToggleCondition = async (
+    field: "hasHypertension" | "hasDiabetes" | "isSmoker" | "hasCardiovascularDisease"
+  ) => {
+    if (role !== "ADMIN" && role !== "GERENTE") return;
+    const nextVal = !patient[field];
+    try {
+      await updatePatientConditionsInStore(patient.id, { [field]: nextVal });
+      setPatients((prev) =>
+        prev.map((p) => (p.id === patient.id ? { ...p, [field]: nextVal } : p))
+      );
+    } catch (e) {
+      // Ignorar erro silenciosamente
+    }
+  };
 
   if (!isAccessAllowed) {
     return (
@@ -210,14 +237,33 @@ export default function PacienteDetalhePage({
               </div>
               <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
                 CPF: {patient.cpf} | CNS: {patient.cns} | {patient.age} anos ({patient.sex})
+                {patient.birthDate ? ` | Nasc.: ${formatDateBR(patient.birthDate)}` : ""}
+                {patient.raceColor ? ` | Raça/Cor: ${patient.raceColor}` : ""}
+                {patient.bolsaFamilia !== undefined
+                  ? ` | Bolsa Família: ${patient.bolsaFamilia ? "Sim" : "Não"}`
+                  : ""}
               </p>
+              {(patient.street || patient.neighborhood || patient.city) && (
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
+                  Endereço: {[
+                    patient.street,
+                    patient.number ? `nº ${patient.number}` : null,
+                    patient.complement,
+                    patient.neighborhood,
+                    patient.city ? `${patient.city}${patient.state ? `/${patient.state}` : ""}` : null,
+                    patient.zipCode ? `CEP ${patient.zipCode}` : null,
+                  ]
+                    .filter(Boolean)
+                    .join(", ")}
+                </p>
+              )}
             </div>
           </div>
 
           <div className="flex flex-wrap gap-2 text-xs font-medium">
             <div className="flex items-center gap-1.5 rounded-lg bg-zinc-100 px-3 py-1.5 dark:bg-zinc-800">
               <Phone className="h-3.5 w-3.5 text-zinc-500" />
-              <span>{patient.phone}</span>
+              <span>{patient.phone || "Sem telefone"}</span>
             </div>
             <div className="flex items-center gap-1.5 rounded-lg bg-zinc-100 px-3 py-1.5 dark:bg-zinc-800">
               <MapPin className="h-3.5 w-3.5 text-zinc-500" />
@@ -228,19 +274,42 @@ export default function PacienteDetalhePage({
 
         {/* Tags de Condições Registradas */}
         <div className="space-y-1.5">
-          <span className="text-xs font-bold uppercase tracking-wider text-zinc-500">
-            Fatores de Risco & Condições DCNT:
-          </span>
-          <div className="flex flex-wrap gap-1.5">
-            {patient.hasHypertension && (
-              <span className="rounded-md bg-blue-100 px-2.5 py-1 text-xs font-bold text-blue-800 dark:bg-blue-950 dark:text-blue-300">
-                Hipertensão Arterial (HAS)
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold uppercase tracking-wider text-zinc-500">
+              Fatores de Risco & Condições DCNT:
+            </span>
+            {(role === "ADMIN" || role === "GERENTE") && (
+              <span className="text-[11px] text-zinc-400">
+                Clique em uma condição crônica para ativar/desativar no prontuário:
               </span>
             )}
-            {patient.hasDiabetes && (
-              <span className="rounded-md bg-purple-100 px-2.5 py-1 text-xs font-bold text-purple-800 dark:bg-purple-950 dark:text-purple-300">
-                Diabetes Mellitus (DM)
-              </span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {(patient.hasHypertension || role === "ADMIN" || role === "GERENTE") && (
+              <button
+                type="button"
+                onClick={() => handleToggleCondition("hasHypertension")}
+                className={`rounded-md px-2.5 py-1 text-xs font-bold transition-all ${
+                  patient.hasHypertension
+                    ? "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300"
+                    : "border border-dashed border-zinc-300 text-zinc-400 hover:border-blue-400 hover:text-blue-600 dark:border-zinc-700"
+                } ${role === "ADMIN" || role === "GERENTE" ? "cursor-pointer" : "cursor-default"}`}
+              >
+                {patient.hasHypertension ? "Hipertensão Arterial (HAS)" : "+ Hipertensão"}
+              </button>
+            )}
+            {(patient.hasDiabetes || role === "ADMIN" || role === "GERENTE") && (
+              <button
+                type="button"
+                onClick={() => handleToggleCondition("hasDiabetes")}
+                className={`rounded-md px-2.5 py-1 text-xs font-bold transition-all ${
+                  patient.hasDiabetes
+                    ? "bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300"
+                    : "border border-dashed border-zinc-300 text-zinc-400 hover:border-purple-400 hover:text-purple-600 dark:border-zinc-700"
+                } ${role === "ADMIN" || role === "GERENTE" ? "cursor-pointer" : "cursor-default"}`}
+              >
+                {patient.hasDiabetes ? "Diabetes Mellitus (DM)" : "+ Diabetes"}
+              </button>
             )}
             {patient.isObese && (
               <span className="rounded-md bg-red-100 px-2.5 py-1 text-xs font-bold text-red-800 dark:bg-red-950 dark:text-red-300">
@@ -252,15 +321,31 @@ export default function PacienteDetalhePage({
                 Sobrepeso (IMC &gt;= 25)
               </span>
             )}
-            {patient.isSmoker && (
-              <span className="rounded-md bg-zinc-200 px-2.5 py-1 text-xs font-bold text-zinc-800 dark:bg-zinc-800 dark:text-zinc-200">
-                Tabagismo
-              </span>
+            {(patient.isSmoker || role === "ADMIN" || role === "GERENTE") && (
+              <button
+                type="button"
+                onClick={() => handleToggleCondition("isSmoker")}
+                className={`rounded-md px-2.5 py-1 text-xs font-bold transition-all ${
+                  patient.isSmoker
+                    ? "bg-zinc-200 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-200"
+                    : "border border-dashed border-zinc-300 text-zinc-400 hover:border-zinc-400 hover:text-zinc-600 dark:border-zinc-700"
+                } ${role === "ADMIN" || role === "GERENTE" ? "cursor-pointer" : "cursor-default"}`}
+              >
+                {patient.isSmoker ? "Tabagismo" : "+ Tabagismo"}
+              </button>
             )}
-            {patient.hasCardiovascularDisease && (
-              <span className="rounded-md bg-rose-100 px-2.5 py-1 text-xs font-bold text-rose-800 dark:bg-rose-950 dark:text-rose-300">
-                Doença Cardiovascular
-              </span>
+            {(patient.hasCardiovascularDisease || role === "ADMIN" || role === "GERENTE") && (
+              <button
+                type="button"
+                onClick={() => handleToggleCondition("hasCardiovascularDisease")}
+                className={`rounded-md px-2.5 py-1 text-xs font-bold transition-all ${
+                  patient.hasCardiovascularDisease
+                    ? "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300"
+                    : "border border-dashed border-zinc-300 text-zinc-400 hover:border-rose-400 hover:text-rose-600 dark:border-zinc-700"
+                } ${role === "ADMIN" || role === "GERENTE" ? "cursor-pointer" : "cursor-default"}`}
+              >
+                {patient.hasCardiovascularDisease ? "Doença Cardiovascular" : "+ Doença Cardiovascular"}
+              </button>
             )}
             {patient.isElderly && (
               <span className="rounded-md bg-indigo-100 px-2.5 py-1 text-xs font-bold text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300">

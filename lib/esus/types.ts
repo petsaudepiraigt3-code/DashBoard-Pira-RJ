@@ -12,12 +12,23 @@ export interface MappedESUSFields {
   idade?: number | string;
   identidadeGenero?: string;
   sexo?: string;
+  racaCor?: string;
+  beneficiarioBolsaFamilia?: string;
+  vigenciaBolsaFamilia?: string;
   cpf?: string;
   cns?: string;
   telefone?: string;
+  telefoneCelular?: string;
+  telefoneResidencial?: string;
+  telefoneContato?: string;
   microarea?: string;
   logradouro?: string;
+  numero?: string;
+  complemento?: string;
   bairro?: string;
+  municipio?: string;
+  uf?: string;
+  cep?: string;
   acsName?: string;
   peso?: number | string;
   altura?: number | string;
@@ -29,11 +40,18 @@ export interface MappedESUSFields {
   dataUltimoAtendimentoEnfermagem?: string;
   dataUltimoAtendimentoOdontologico?: string;
   dataUltimaVisitaACS?: string;
+  daysSinceMedicalCare?: number | string;
   monthsSinceMedicalCare?: number | string;
+  daysSinceNursingCare?: number | string;
   monthsSinceNursingCare?: number | string;
+  daysSinceDentalCare?: number | string;
   monthsSinceDentalCare?: number | string;
-  monthsSinceHomeVisit?: number | string;
   daysSinceHomeVisit?: number | string;
+  monthsSinceHomeVisit?: number | string;
+  hasHypertension?: string | boolean;
+  hasDiabetes?: string | boolean;
+  isSmoker?: string | boolean;
+  hasCardiovascularDisease?: string | boolean;
 }
 
 export interface NormalizedPatientRecord {
@@ -43,17 +61,28 @@ export interface NormalizedPatientRecord {
   idade: number;
   sexo: "Masculino" | "Feminino";
   identidadeGenero?: string;
+  racaCor?: string;
+  beneficiarioBolsaFamilia?: boolean;
+  vigenciaBolsaFamilia?: string;
   cpf: string; // 11 dígitos ou ""
   cns: string; // 15 dígitos ou ""
   telefoneOriginal: string;
   telefoneNormalizado: string;
+  telefoneCelular?: string;
+  telefoneResidencial?: string;
+  telefoneContato?: string;
   microarea: string;
   microareaId?: string;
   microareaCodigo?: string;
   microareaOriginal?: string;
   acsName: string;
   logradouro: string;
+  numero?: string;
+  complemento?: string;
   bairro: string;
+  municipio?: string;
+  uf?: string;
+  cep?: string;
   
   // Medições
   peso?: number;
@@ -67,21 +96,28 @@ export interface NormalizedPatientRecord {
   dataPA?: string; // YYYY-MM-DD
   paStatus?: "Normal" | "PA Alterada" | "PA Muito Elevada" | "Sem Informação";
   
-  // Acompanhamentos e contagens de meses
+  // Acompanhamentos e contagens de dias/meses
   lastMedicalCare?: string;
   lastNursingCare?: string;
   lastDentalCare?: string;
   lastHomeVisit?: string;
+  daysSinceMedicalCare?: number;
   monthsSinceMedicalCare?: number;
+  daysSinceNursingCare?: number;
   monthsSinceNursingCare?: number;
+  daysSinceDentalCare?: number;
   monthsSinceDentalCare?: number;
-  monthsSinceHomeVisit?: number;
   daysSinceHomeVisit?: number;
+  monthsSinceHomeVisit?: number;
   
-  // Fatores derivados e prioridade
+  // Fatores derivados, condições e prioridade
   isElderly: boolean;
   isObese: boolean;
   isOverweight: boolean;
+  hasHypertension?: boolean;
+  hasDiabetes?: boolean;
+  isSmoker?: boolean;
+  hasCardiovascularDisease?: boolean;
   priority: "Alta" | "Média" | "Atenção" | "Acompanhado";
   priorityScore: number;
   activeSearchReason?: string;

@@ -134,6 +134,8 @@ export async function ensureUnitMicroareaInStore(
   } else if (rawUpper.includes("NAO INFORMADA") || rawUpper.includes("NÃO INFORMADA") || rawUpper === "-" || !codigoClean) {
     tipoMicroarea = "NAO_INFORMADA";
     codigoClean = "NAO_INFORMADA";
+  } else {
+    codigoClean = codigoClean.padStart(2, "0");
   }
 
   const microareaId = `ma_${unidadeId}_${codigoClean}`;
@@ -241,7 +243,8 @@ export async function getAcsUsersByUnit(unidadeId: string): Promise<UserProfileD
     const querySnapshot = await getDocs(q);
 
     querySnapshot.forEach((docSnap) => {
-      const data = { uid: docSnap.id, ...docSnap.data() } as UserProfileDoc;
+      const raw = docSnap.data();
+      const data = { ...raw, uid: raw.authUid || docSnap.id } as UserProfileDoc;
       const key = (data.email || docSnap.id).toLowerCase().trim();
 
       if (!mapByEmail.has(key)) {
@@ -335,8 +338,12 @@ export async function getPatientCountMapByMicroarea(unidadeId: string): Promise<
       const uId = d.unidadeId || "USF-003";
       if (uId === unidadeId || !d.unidadeId) {
         const rawMA = d.microarea || "Não informada";
-        const codeClean = rawMA.replace(/\D/g, "").trim() || "NAO_INFORMADA";
+        const digits = rawMA.replace(/\D/g, "").trim();
+        const codeClean = digits ? digits.padStart(2, "0") : "NAO_INFORMADA";
         countMap[codeClean] = (countMap[codeClean] || 0) + 1;
+        if (digits && digits !== codeClean) {
+          countMap[digits] = countMap[codeClean];
+        }
       }
     });
   } catch (err) {

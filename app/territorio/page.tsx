@@ -3,7 +3,9 @@
 import React, { useState, useEffect } from "react";
 import { AppLayout } from "@/components/layout/app-layout";
 import { getAllPatientsFromStore } from "@/lib/store/patients";
-import { MicroareaStats, Patient } from "@/types/dcnt";
+import { DEFAULT_DCNT_PARAMETERS, getDcntParametersFromStore } from "@/lib/store/parameters";
+import { DcntParameters, MicroareaStats, Patient } from "@/types/dcnt";
+import { isIdoso, isObesidade, isPAAlterada, isSemVisitaACS } from "@/lib/utils/patient-filters";
 import { Modal } from "@/components/ui/modal";
 import { BarChartSVG } from "@/components/ui/charts";
 import { MapPin, Users, UserCheck, AlertTriangle, ChevronRight, Activity, Heart, RefreshCw } from "lucide-react";
@@ -14,23 +16,27 @@ export default function TerritorioPage() {
 
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(false);
+  const [dcntParams, setDcntParams] = useState<DcntParameters>(DEFAULT_DCNT_PARAMETERS);
   const [selectedMicroarea, setSelectedMicroarea] = useState<MicroareaStats | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   const loadData = async () => {
     setLoading(true);
 
-
     try {
-      const realData = await getAllPatientsFromStore({
-        role,
-        userUnitId,
-        assignedMicroareaCodes: userProfile?.assignedMicroareaCodes,
-        acsName: role === "ACS" ? userProfile?.name : undefined,
-        acsId: role === "ACS" ? userProfile?.uid : undefined,
-      });
+      const [realData, loadedParams] = await Promise.all([
+        getAllPatientsFromStore({
+          role,
+          userUnitId,
+          assignedMicroareaCodes: userProfile?.assignedMicroareaCodes,
+          acsName: role === "ACS" ? userProfile?.name : undefined,
+          acsId: role === "ACS" ? userProfile?.uid : undefined,
+        }),
+        getDcntParametersFromStore(),
+      ]);
 
       setPatients(realData || []);
+      setDcntParams(loadedParams);
     } catch (e) {
       console.warn("Aviso ao carregar pacientes do território:", e);
       setPatients([]);
@@ -80,13 +86,13 @@ export default function TerritorioPage() {
       code: item.code,
       acsName: item.acsName,
       population: pList.length,
-      elderlyCount: pList.filter((p) => p.isElderly).length,
+      elderlyCount: pList.filter((p) => isIdoso(p, dcntParams)).length,
       hypertensionCount: pList.filter((p) => p.hasHypertension).length,
       diabetesCount: pList.filter((p) => p.hasDiabetes).length,
-      obesityCount: pList.filter((p) => p.isObese).length,
-      alteredPACount: pList.filter((p) => p.lastPA && (p.lastPA.systolic >= 140 || p.lastPA.diastolic >= 90)).length,
+      obesityCount: pList.filter((p) => isObesidade(p, dcntParams)).length,
+      alteredPACount: pList.filter((p) => isPAAlterada(p, dcntParams)).length,
       activeSearchCount: pList.filter((p) => p.priority === "Alta").length,
-      outdatedVisitCount: pList.filter((p) => !p.lastVisitDate || new Date(p.lastVisitDate) < new Date("2026-04-01")).length,
+      outdatedVisitCount: pList.filter((p) => isSemVisitaACS(p, dcntParams)).length,
     };
   });
 
