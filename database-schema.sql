@@ -1219,4 +1219,156 @@ do $$ declare t text; begin
  end loop;
  grant usage, select on all sequences in schema public to authenticated, service_role;
 end $$;
+
+-- ==============================================================================
+-- 5. CONTAS DE ACESSO RÁPIDO PARA HOMOLOGAÇÃO / TESTES (SUPABASE AUTH + PERFIS)
+-- ==============================================================================
+do $$
+declare
+  r record;
+  v_uid uuid;
+  v_encrypted_pw text;
+begin
+  if to_regclass('auth.users') is not null and to_regclass('auth.identities') is not null then
+    create extension if not exists pgcrypto with schema extensions;
+    v_encrypted_pw := extensions.crypt('Admin@123456', extensions.gen_salt('bf'));
+
+    -- Garante a unidade padrão USF-003 no app_documents
+    insert into public.app_documents (path, data, updated_at)
+    values (
+      'unidades/USF-003',
+      jsonb_build_object(
+        'id', 'USF-003',
+        'codigo', 'USF-003',
+        'nome', 'USF Arrozal 3',
+        'nomeNormalizado', 'usf arrozal 3',
+        'cnes', '2270986',
+        'tipo', 'USF',
+        'ativo', true
+      ),
+      now()
+    )
+    on conflict (path) do update
+      set data = public.app_documents.data || excluded.data,
+          updated_at = now();
+
+    for r in
+      select * from (values
+        ('11111111-1111-1111-1111-111111111111'::uuid, 'admin@dcntsaude.gov.br',   'Administrador Sistema',   'ADMIN',   null),
+        ('22222222-2222-2222-2222-222222222222'::uuid, 'gerente@dcntsaude.gov.br', 'Gerente USF Arrozal 3',   'GERENTE', 'USF-003'),
+        ('33333333-3333-3333-3333-333333333333'::uuid, 'acs@dcntsaude.gov.br',     'Ana Maria Souza (ACS)',   'ACS',     'USF-003')
+      ) as t(default_uid, email, nome, perfil, unidade_id)
+    loop
+      select id into v_uid from auth.users where lower(email) = lower(r.email) limit 1;
+
+      if v_uid is null then
+        v_uid := r.default_uid;
+        insert into auth.users (
+          instance_id, id, aud, role, email, encrypted_password,
+          email_confirmed_at, raw_app_meta_data, raw_user_meta_data,
+          created_at, updated_at, confirmation_token, email_change,
+          email_change_token_new, recovery_token
+        ) values (
+          '00000000-0000-0000-0000-000000000000',
+          v_uid,
+          'authenticated',
+          'authenticated',
+          r.email,
+          v_encrypted_pw,
+          now(),
+          '{"provider":"email","providers":["email"]}'::jsonb,
+          jsonb_build_object('nome', r.nome),
+          now(),
+          now(),
+          '', '', '', ''
+        );
+      else
+        update auth.users
+           set encrypted_password = v_encrypted_pw,
+               email_confirmed_at = coalesce(email_confirmed_at, now()),
+               raw_app_meta_data = coalesce(raw_app_meta_data, '{}'::jsonb) || '{"provider":"email","providers":["email"]}'::jsonb,
+               raw_user_meta_data = coalesce(raw_user_meta_data, '{}'::jsonb) || jsonb_build_object('nome', r.nome),
+               confirmation_token = coalesce(confirmation_token, ''),
+               email_change = coalesce(email_change, ''),
+               email_change_token_new = coalesce(email_change_token_new, ''),
+               recovery_token = coalesce(recovery_token, ''),
+               updated_at = now()
+         where id = v_uid;
+      end if;
+
+      insert into auth.identities (
+        id, user_id, provider_id, identity_data, provider, last_sign_in_at, created_at, updated_at
+      ) values (
+        gen_random_uuid(),
+        v_uid,
+        v_uid::text,
+        jsonb_build_object('sub', v_uid::text, 'email', r.email, 'email_verified', true, 'phone_verified', false),
+        'email',
+        now(),
+        now(),
+        now()
+      )
+      on conflict (provider_id, provider) do update
+        set user_id = excluded.user_id,
+            identity_data = excluded.identity_data,
+            updated_at = now();
+
+      insert into public.app_documents (path, data, updated_at)
+      values (
+        'usuarios/' || v_uid::text,
+        jsonb_build_object(
+          'uid', v_uid::text,
+          'authUid', v_uid::text,
+          'authAtiva', true,
+          'nome', r.nome,
+          'email', r.email,
+          'perfil', r.perfil,
+          'unidadeId', r.unidade_id,
+          'ativo', true,
+          'updatedAt', now()
+        ),
+        now()
+      )
+      on conflict (path) do update
+        set data = public.app_documents.data || excluded.data,
+            updated_at = now();
+
+      if r.perfil = 'ACS' then
+        insert into public.app_documents (path, data, updated_at)
+        values
+          (
+            'microareas/USF-003_56',
+            jsonb_build_object(
+              'id', 'USF-003_56',
+              'unidadeId', 'USF-003',
+              'codigo', '56',
+              'nome', 'Microárea 56',
+              'acsId', v_uid::text,
+              'acsNome', r.nome,
+              'tipoMicroarea', 'NORMAL',
+              'ativo', true
+            ),
+            now()
+          ),
+          (
+            'microareas/USF-003_01',
+            jsonb_build_object(
+              'id', 'USF-003_01',
+              'unidadeId', 'USF-003',
+              'codigo', '01',
+              'nome', 'Microárea 01',
+              'acsId', v_uid::text,
+              'acsNome', r.nome,
+              'tipoMicroarea', 'NORMAL',
+              'ativo', true
+            ),
+            now()
+          )
+        on conflict (path) do update
+          set data = public.app_documents.data || excluded.data,
+              updated_at = now();
+      end if;
+    end loop;
+  end if;
+end $$;
 commit;

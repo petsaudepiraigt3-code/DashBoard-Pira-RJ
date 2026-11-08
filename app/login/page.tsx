@@ -25,37 +25,49 @@ export default function LoginPage() {
     const cleanEmail = email.trim().toLowerCase();
     const cleanPassword = password.trim();
 
-    // 1. Tentar login rápido com credenciais de teste / desenvolvimento
+    // 1. Tentar autenticar no Supabase Auth primeiro (gera sessão JWT real para o RLS do banco)
+    if (isSupabaseConfigured) {
+      try {
+        const { data, error: authError } = await supabase.auth.signInWithPassword({
+          email: cleanEmail,
+          password: cleanPassword,
+        });
+        if (!authError && data.user) {
+          const profile = await getDoc(doc(db, 'usuarios', data.user.id));
+          const p = profile.data();
+          if (
+            profile.exists() &&
+            p.ativo !== false &&
+            ['ADMIN', 'GERENTE', 'ACS'].includes(p.perfil) &&
+            (p.perfil === 'ADMIN' || p.unidadeId)
+          ) {
+            if (typeof window !== 'undefined') {
+              localStorage.removeItem('dev_auth_logged');
+            }
+            return;
+          }
+          await supabase.auth.signOut();
+        }
+      } catch {
+        await supabase.auth.signOut().catch(() => {});
+      }
+    }
+
+    // 2. Fallback para credenciais rápidas de teste (caso o SQL de contas ainda não tenha sido rodado)
     const devResult = await loginWithDevCredentials(cleanEmail, cleanPassword);
     if (devResult.success) {
       router.replace('/dashboard');
       return;
     }
 
-    // 2. Autenticação via Supabase Auth
     if (!isSupabaseConfigured) {
       setError('Configure a conexão com o Supabase no ambiente do sistema.');
       setLoading(false);
       return;
     }
 
-    try {
-      const { data, error: authError } = await supabase.auth.signInWithPassword({ email: cleanEmail, password: cleanPassword });
-      if (authError) throw authError;
-      const profile = await getDoc(doc(db, 'usuarios', data.user.id));
-      const p = profile.data();
-      if (!profile.exists() || p.ativo === false || !['ADMIN', 'GERENTE', 'ACS'].includes(p.perfil) || (p.perfil !== 'ADMIN' && !p.unidadeId)) {
-        await supabase.auth.signOut();
-        setError('Seu acesso está inativo ou sem perfil/unidade. Contate o administrador.');
-        return;
-      }
-      // The provider redirects only after loading the authorized profile.
-    } catch (err: any) {
-      await supabase.auth.signOut();
-      setError(err.code === 'invalid_credentials' ? 'E-mail ou senha inválidos.' : 'Não foi possível entrar. Verifique suas credenciais e a conexão.');
-    } finally {
-      setLoading(false);
-    }
+    setError('E-mail ou senha inválidos.');
+    setLoading(false);
   };
 
   return (

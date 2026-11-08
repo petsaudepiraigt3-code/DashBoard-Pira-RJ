@@ -84,7 +84,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (p.perfil !== 'ADMIN' && !p.unidadeId) {
           throw new Error('Seu usuário não possui unidade configurada.');
         }
-        const unit = p.unidadeId ? await getDoc(doc(db, 'unidades', p.unidadeId)) : null;
+        const effectiveUnitId = p.unidadeId || (p.perfil === 'ADMIN' ? 'USF-003' : null);
+        const unit = effectiveUnitId ? await getDoc(doc(db, 'unidades', effectiveUnitId)) : null;
         const areas = p.perfil === 'ACS' ? await getDocs(query(collection(db, 'microareas'), where('acsId', '==', user.id))) : null;
         if (alive && version === generation.current) {
           setState({
@@ -96,8 +97,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               name: p.nome,
               email: user.email || '',
               role: p.perfil,
-              unitId: p.unidadeId || null,
-              unitName: unit?.data().nome || null,
+              unitId: effectiveUnitId,
+              unitName: unit?.data().nome || (effectiveUnitId === 'USF-003' ? 'USF Arrozal 3' : null),
               assignedMicroareaCodes: areas?.docs.map(a => String(a.data().codigo)) || [],
               ativo: true,
             },
