@@ -7,8 +7,7 @@ import { Modal } from "@/components/ui/modal";
 import { useAuth } from "@/context/auth-context";
 import { Patient, PriorityLevel } from "@/types/dcnt";
 import { WhatsAppMessage, MetaWhatsAppTemplate, MetaApiConfigStatus } from "@/types/messages";
-import { getAllPatientsFromFirestore } from "@/lib/firebase/patients";
-import { MOCK_PATIENTS, MOCK_MICROAREAS } from "@/data/mock-data";
+import { getAllPatientsFromStore } from "@/lib/store/patients";
 import { META_WHATSAPP_TEMPLATES, renderTemplateText } from "@/lib/meta/templates";
 import {
   getWhatsAppMessages,
@@ -51,7 +50,7 @@ export default function MensagensPage() {
   const { userProfile, role, userUnitId, userUnitNome } = useAuth();
 
   // 1. Estados dos Dados
-  const [patients, setPatients] = useState<Patient[]>(MOCK_PATIENTS);
+  const [patients, setPatients] = useState<Patient[]>([]);
   const [loadingPatients, setLoadingPatients] = useState(true);
   const [messages, setMessages] = useState<WhatsAppMessage[]>([]);
   const [loadingMessages, setLoadingMessages] = useState(true);
@@ -93,20 +92,16 @@ export default function MensagensPage() {
   const loadPatients = async () => {
     setLoadingPatients(true);
     try {
-      const realData = await getAllPatientsFromFirestore({
+      const realData = await getAllPatientsFromStore({
         role,
         userUnitId,
         assignedMicroareaCodes: userProfile?.assignedMicroareaCodes,
         acsName: role === "ACS" ? userProfile?.name : undefined,
         acsId: role === "ACS" ? userProfile?.uid : undefined,
       });
-      if (realData && realData.length > 0) {
-        setPatients(realData);
-      } else {
-        setPatients(MOCK_PATIENTS);
-      }
+      setPatients(realData || []);
     } catch (e) {
-      setPatients(MOCK_PATIENTS);
+      setPatients([]);
     } finally {
       setLoadingPatients(false);
     }
@@ -474,9 +469,9 @@ export default function MensagensPage() {
                       className="w-full px-2 py-1 text-[11px] bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded text-zinc-700 dark:text-zinc-300 focus:outline-none cursor-pointer"
                     >
                       <option value="Todas">Todas as Microáreas</option>
-                      {MOCK_MICROAREAS.map((ma) => (
-                        <option key={ma.id} value={`Microárea ${ma.code}`}>
-                          MA {ma.code} - {ma.acsName.split(" ")[0]}
+                      {Array.from(new Set(patients.map(p => p.microarea))).map((microarea) => (
+                        <option key={microarea} value={microarea}>
+                          {microarea}
                         </option>
                       ))}
                     </select>

@@ -11,7 +11,7 @@ export default function Home() {
 
   useEffect(() => {
     if (!loading) {
-      if (user || userProfile) {
+      if (user && userProfile?.ativo) {
         router.push("/dashboard");
       } else {
         router.push("/login");

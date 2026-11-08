@@ -24,7 +24,7 @@ export function AppLayout({
   const router = useRouter();
   const [isOpenMobile, setIsOpenMobile] = useState(false);
 
-  const isAuthenticated = Boolean(user || userProfile);
+  const isAuthenticated = Boolean(user && userProfile?.ativo);
 
   useEffect(() => {
     if (!loading && !isAuthenticated) {

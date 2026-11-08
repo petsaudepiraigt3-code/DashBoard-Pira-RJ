@@ -1,218 +1,165 @@
--- ==============================================================================
--- DCNTSAUDE - ESTRUTURA DO BANCO DE DADOS (PostgreSQL / Supabase)
--- Tabelas: usuario, area, microarea, controle_carga, paciente, atendimento, 
---          afericao_pressao, afericao_medidas, comorbidade, paciente_comorbidade
--- ==============================================================================
-
--- 1. TABELA DE ÁREAS (Unidades de Saúde da Família e Territórios)
--- O Responsável pela área é o Gerente da Unidade, mas permite também outro responsável
-CREATE TABLE IF NOT EXISTS public.area (
-  id_area SERIAL PRIMARY KEY,
-  codigo VARCHAR(50) UNIQUE NOT NULL,
-  nome VARCHAR(255) NOT NULL,
-  responsavel_nome VARCHAR(255) NOT NULL,
-  responsavel_cargo VARCHAR(100) DEFAULT 'Gerente da Unidade',
-  responsavel_id INTEGER NULL,
-  cnes VARCHAR(20) NULL,
-  tipo VARCHAR(50) DEFAULT 'USF',
-  ativa BOOLEAN DEFAULT TRUE,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+-- Canonical storage for complete application records in Supabase PostgreSQL.
+-- Does not delete or overwrite the existing relational tables.
+begin;
+create table if not exists public.app_documents (
+  path text primary key check (path ~ '^[^/]+/[^/]+(/[^/]+/[^/]+)*$'),
+  collection text generated always as (regexp_replace(path, '/[^/]+$', '')) stored,
+  data jsonb not null check (jsonb_typeof(data) = 'object'),
+  updated_at timestamptz not null default now()
 );
+create index if not exists app_documents_collection_idx on public.app_documents(collection);
+create index if not exists app_documents_data_idx on public.app_documents using gin(data);
+create index if not exists app_documents_unit_idx on public.app_documents((data->>'unidadeId'));
+create index if not exists app_documents_email_idx on public.app_documents((lower(data->>'email'))) where collection = 'usuarios';
+alter table public.app_documents enable row level security;
+revoke all on public.app_documents from anon;
+grant select, insert, update, delete on public.app_documents to authenticated, service_role;
 
--- 2. TABELA DE MICROÁREAS
--- Pertence a uma Área e o Responsável é o ACS (Agente Comunitário de Saúde)
-CREATE TABLE IF NOT EXISTS public.microarea (
-  id_microarea SERIAL PRIMARY KEY,
-  id_area INTEGER NOT NULL REFERENCES public.area(id_area) ON DELETE CASCADE,
-  codigo VARCHAR(50) NOT NULL,
-  nome VARCHAR(255) NOT NULL,
-  responsavel_nome VARCHAR(255) NOT NULL, -- ACS Responsável
-  responsavel_id INTEGER NULL,
-  tipo VARCHAR(50) DEFAULT 'NORMAL',
-  ativa BOOLEAN DEFAULT TRUE,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  CONSTRAINT uq_area_microarea UNIQUE (id_area, codigo)
+create or replace function public.current_profile() returns jsonb
+language sql stable security definer set search_path = public
+as $$ select data from public.app_documents where path = 'usuarios/' || auth.uid()::text and data->>'ativo' = 'true' $$;
+
+create or replace function public.patient_scope(p jsonb) returns boolean
+language sql stable security definer set search_path = public
+as $$
+ select coalesce(
+   public.current_profile()->>'perfil' = 'ADMIN' or (
+    p->>'unidadeId' = public.current_profile()->>'unidadeId' and (
+      public.current_profile()->>'perfil' = 'GERENTE' or (
+        public.current_profile()->>'perfil' = 'ACS' and exists (
+          select 1 from public.app_documents m where m.collection = 'microareas'
+          and m.data->>'unidadeId' = p->>'unidadeId' and m.data->>'acsId' = auth.uid()::text
+          and m.data->>'ativo' = 'true'
+          and (m.data->>'codigo' = coalesce(p->>'microareaCodigo', regexp_replace(p->>'microarea', '\D', '', 'g')))
+        )
+      )
+    )
+   ), false)
+$$;
+
+create or replace function public.document_access(p_path text, p_data jsonb, writing boolean) returns boolean
+language plpgsql stable security definer set search_path = public
+as $$
+declare actor jsonb := public.current_profile(); kind text := split_part(p_path, '/', 1); patient jsonb;
+begin
+ if actor is null then return false; end if;
+ if actor->>'perfil' = 'ADMIN' then return true; end if;
+ if kind = 'usuarios' then
+   return (not writing and p_path = 'usuarios/' || auth.uid()::text) or
+    (actor->>'perfil' = 'GERENTE' and p_data->>'perfil' = 'ACS' and p_data->>'unidadeId' = actor->>'unidadeId');
+ elsif kind = 'unidades' then
+   return not writing and p_path = 'unidades/' || (actor->>'unidadeId');
+ elsif kind = 'microareas' then
+   return p_data->>'unidadeId' = actor->>'unidadeId' and
+     (actor->>'perfil' = 'GERENTE' or (not writing and p_data->>'acsId' = auth.uid()::text));
+ elsif kind = 'pacientes' then
+   if array_length(string_to_array(p_path, '/'), 1) = 2 then return public.patient_scope(p_data); end if;
+   select data into patient from public.app_documents where path = 'pacientes/' || split_part(p_path, '/', 2);
+   return public.patient_scope(patient) and (not writing or actor->>'perfil' = 'GERENTE' or split_part(p_path, '/', 3) = 'acoes');
+ elsif kind = 'mensagens_whatsapp' then
+   select data into patient from public.app_documents where path = 'pacientes/' || (p_data->>'patientId');
+   return public.patient_scope(patient);
+ elsif kind in ('imports', 'auditLogs') then
+   return p_data->>'unidadeId' = actor->>'unidadeId' and (actor->>'perfil' = 'GERENTE' or kind = 'auditLogs');
+ elsif kind = 'diagnostico' then return actor->>'perfil' = 'GERENTE';
+ end if;
+ return false;
+end $$;
+
+drop policy if exists documents_read on public.app_documents;
+create policy documents_read on public.app_documents for select to authenticated using (public.document_access(path, data, false));
+drop policy if exists documents_insert on public.app_documents;
+create policy documents_insert on public.app_documents for insert to authenticated with check (
+ public.document_access(path, data, true) and
+ not (collection = 'pacientes' and public.current_profile()->>'perfil' = 'ACS')
 );
+drop policy if exists documents_update on public.app_documents;
+create policy documents_update on public.app_documents for update to authenticated
+ using (public.document_access(path, data, true)) with check (public.document_access(path, data, true));
+drop policy if exists documents_delete on public.app_documents;
+create policy documents_delete on public.app_documents for delete to authenticated using (public.current_profile()->>'perfil' = 'ADMIN');
 
--- 3. TABELA DE USUÁRIOS (Controle de Acesso e Perfis)
-CREATE TABLE IF NOT EXISTS public.usuario (
-  id_usuario SERIAL PRIMARY KEY,
-  uid VARCHAR(128) UNIQUE,
-  nome VARCHAR(255) NOT NULL,
-  email VARCHAR(255) UNIQUE NOT NULL,
-  senha_hash VARCHAR(255) NULL,
-  perfil VARCHAR(50) NOT NULL, -- 'ADMIN', 'GERENTE', 'ACS', 'OUTRO'
-  id_area INTEGER NULL REFERENCES public.area(id_area) ON DELETE SET NULL,
-  id_microarea INTEGER NULL REFERENCES public.microarea(id_microarea) ON DELETE SET NULL,
-  ativo BOOLEAN DEFAULT TRUE,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
+-- Invoker rights preserve RLS. Each batch is a single PostgreSQL transaction.
+create or replace function public.write_documents(operations jsonb) returns void
+language plpgsql security invoker set search_path = public
+as $$
+declare op jsonb; previous jsonb;
+begin
+ if jsonb_typeof(operations) <> 'array' or jsonb_array_length(operations) > 500 then raise exception 'Invalid batch'; end if;
+ for op in select * from jsonb_array_elements(operations) loop
+   previous := null;
+   select data into previous from public.app_documents where path = op->>'path' for update;
+   if previous is not null then
+     update public.app_documents set data = case when (op->>'merge')::boolean then previous || (op->'data') else op->'data' end,
+       updated_at = now() where path = op->>'path';
+     if not found then raise exception 'Write denied'; end if;
+   else
+     if coalesce((op->>'must_exist')::boolean, false) then raise exception 'Document not found'; end if;
+     insert into public.app_documents(path, data) values (op->>'path', op->'data');
+   end if;
+ end loop;
+end $$;
+revoke all on function public.write_documents(jsonb) from public, anon;
+grant execute on function public.write_documents(jsonb) to authenticated, service_role;
 
--- 4. TABELA DE CONTROLE DE CARGA (Uploads e Importações e-SUS)
--- Armazena data, hora, responsável pela carga e resumo de atendimentos e pesos gerados
-CREATE TABLE IF NOT EXISTS public.controle_carga (
-  id_carga SERIAL PRIMARY KEY,
-  data_carga DATE NOT NULL DEFAULT CURRENT_DATE,
-  hora_carga TIME NOT NULL DEFAULT CURRENT_TIME,
-  data_hora TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-  responsavel_carga VARCHAR(255) NOT NULL,
-  responsavel_id VARCHAR(128) NULL,
-  responsavel_perfil VARCHAR(50) NOT NULL DEFAULT 'GERENTE', -- 'GERENTE' | 'ACS' | 'ADMIN'
-  id_area INTEGER NULL REFERENCES public.area(id_area) ON DELETE SET NULL,
-  area_nome VARCHAR(255) NULL,
-  arquivo_nome VARCHAR(255) NULL,
-  tipo_carga VARCHAR(50) DEFAULT 'COMPLETA',
-  total_registros INTEGER DEFAULT 0,
-  novos_pacientes INTEGER DEFAULT 0,
-  pacientes_atualizados INTEGER DEFAULT 0,
-  novos_atendimentos INTEGER DEFAULT 0, -- Registros de atendimento clínico/visita adicionados
-  novos_pesos INTEGER DEFAULT 0,        -- Registros de medição de peso/antropometria adicionados
-  status VARCHAR(50) DEFAULT 'Concluído',
-  detalhes TEXT NULL,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
--- 5. TABELAS CLÍNICAS EXISTENTES (Caso ainda não criadas)
-CREATE TABLE IF NOT EXISTS public.paciente (
-  id_paciente SERIAL PRIMARY KEY,
-  cpf VARCHAR(20) UNIQUE,
-  cns VARCHAR(30) UNIQUE,
-  nome VARCHAR(255) NOT NULL,
-  data_nascimento DATE,
-  sexo VARCHAR(20),
-  identidade_genero VARCHAR(50),
-  raca_cor VARCHAR(50),
-  beneficiario_bolsa_familia BOOLEAN DEFAULT FALSE,
-  vigencia_bolsa_familia VARCHAR(50),
-  telefone_celular VARCHAR(30),
-  telefone_residencial VARCHAR(30),
-  telefone_contato VARCHAR(30),
-  id_endereco INTEGER,
-  area VARCHAR(100),
-  microarea INTEGER,
-  rua VARCHAR(255),
-  numero VARCHAR(50),
-  complemento VARCHAR(100),
-  bairro VARCHAR(100),
-  municipio VARCHAR(100) DEFAULT 'Piraí',
-  uf VARCHAR(10) DEFAULT 'RJ',
-  cep VARCHAR(20),
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS public.comorbidade (
-  id_comorbidade SERIAL PRIMARY KEY,
-  tipo_comorbidade VARCHAR(100) UNIQUE NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS public.paciente_comorbidade (
-  id_paciente INTEGER NOT NULL REFERENCES public.paciente(id_paciente) ON DELETE CASCADE,
-  id_comorbidade INTEGER NOT NULL REFERENCES public.comorbidade(id_comorbidade) ON DELETE CASCADE,
-  PRIMARY KEY (id_paciente, id_comorbidade)
-);
-
-CREATE TABLE IF NOT EXISTS public.atendimento (
-  id_atendimento SERIAL PRIMARY KEY,
-  id_paciente INTEGER NOT NULL REFERENCES public.paciente(id_paciente) ON DELETE CASCADE,
-  tipo_atendimento VARCHAR(50) NOT NULL, -- 'Médico', 'Enfermagem', 'Odontológico', 'Visita Domiciliar'
-  data_ultimo_atendimento DATE NOT NULL,
-  id_carga INTEGER NULL REFERENCES public.controle_carga(id_carga) ON DELETE SET NULL,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS public.afericao_pressao (
-  id_afericao SERIAL PRIMARY KEY,
-  id_paciente INTEGER NOT NULL REFERENCES public.paciente(id_paciente) ON DELETE CASCADE,
-  pressao_sistolica INTEGER NOT NULL,
-  pressao_diastolica INTEGER NOT NULL,
-  data_afericao DATE NOT NULL,
-  id_carga INTEGER NULL REFERENCES public.controle_carga(id_carga) ON DELETE SET NULL,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS public.afericao_medidas (
-  id_afericao SERIAL PRIMARY KEY,
-  id_paciente INTEGER NOT NULL REFERENCES public.paciente(id_paciente) ON DELETE CASCADE,
-  peso NUMERIC(6,2),
-  altura NUMERIC(4,2),
-  data_afericao DATE NOT NULL,
-  id_carga INTEGER NULL REFERENCES public.controle_carga(id_carga) ON DELETE SET NULL,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
--- ==============================================================================
--- ÍNDICES PARA BUSCA RÁPIDA E EVITAR DUPLICIDADES
--- ==============================================================================
-CREATE INDEX IF NOT EXISTS idx_atendimento_paciente_data ON public.atendimento(id_paciente, data_ultimo_atendimento, tipo_atendimento);
-CREATE INDEX IF NOT EXISTS idx_afericao_medidas_paciente_data ON public.afericao_medidas(id_paciente, data_afericao);
-CREATE INDEX IF NOT EXISTS idx_afericao_pressao_paciente_data ON public.afericao_pressao(id_paciente, data_afericao);
-CREATE INDEX IF NOT EXISTS idx_controle_carga_data ON public.controle_carga(data_carga DESC, hora_carga DESC);
-
--- ==============================================================================
--- PERMISSÕES PÚBLICAS (Supabase anon / authenticated / service_role)
--- ==============================================================================
-GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
-GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated, service_role;
-GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO anon, authenticated, service_role;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO anon, authenticated, service_role;
-
-ALTER TABLE public.area DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.microarea DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.usuario DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.controle_carga DISABLE ROW LEVEL SECURITY;
-
--- ==============================================================================
--- POVOAMENTO INICIAL (SEED)
--- ==============================================================================
-
--- 1. Inserir Área Padrão
-INSERT INTO public.area (codigo, nome, responsavel_nome, responsavel_cargo, cnes, tipo, ativa)
-VALUES 
-  ('USF-003', 'USF Arrozal 3', 'Carlos Alberto (Gerente Unidade)', 'Gerente da Unidade', '1234567', 'USF', true),
-  ('USF-001', 'USF Central', 'Dra. Márcia Regina', 'Responsável Técnico / Coordenação', '7654321', 'USF', true)
-ON CONFLICT (codigo) DO UPDATE 
-SET 
-  nome = EXCLUDED.nome,
-  responsavel_nome = EXCLUDED.responsavel_nome,
-  responsavel_cargo = EXCLUDED.responsavel_cargo;
-
--- 2. Inserir Microáreas da USF-003 vinculadas ao ACS
-DO $$
-DECLARE
-  v_area_id INTEGER;
-BEGIN
-  SELECT id_area INTO v_area_id FROM public.area WHERE codigo = 'USF-003' LIMIT 1;
-
-  IF v_area_id IS NOT NULL THEN
-    INSERT INTO public.microarea (id_area, codigo, nome, responsavel_nome, tipo, ativa)
-    VALUES
-      (v_area_id, '01', 'Microárea 01', 'Ana Maria Souza (ACS)', 'NORMAL', true),
-      (v_area_id, '02', 'Microárea 02', 'Carlos Eduardo Silva (ACS)', 'NORMAL', true),
-      (v_area_id, '03', 'Microárea 03', 'Fernanda Oliveira (ACS)', 'NORMAL', true),
-      (v_area_id, '04', 'Microárea 04', 'João Pedro Santos (ACS)', 'NORMAL', true),
-      (v_area_id, '05', 'Microárea 05', 'Mariana Costa (ACS)', 'NORMAL', true),
-      (v_area_id, '06', 'Microárea 06', 'Roberto Lima (ACS)', 'NORMAL', true),
-      (v_area_id, '56', 'Microárea 56', 'Ana Maria Souza (ACS)', 'NORMAL', true)
-    ON CONFLICT (id_area, codigo) DO UPDATE
-    SET 
-      responsavel_nome = EXCLUDED.responsavel_nome,
-      nome = EXCLUDED.nome;
-  END IF;
-END $$;
-
--- 3. Inserir Usuários Iniciais de Controle de Acesso
-INSERT INTO public.usuario (uid, nome, email, perfil, ativo)
-VALUES
-  ('admin-dev-id', 'Administrador DCNT Saúde', 'admin@dcntsaude.gov.br', 'ADMIN', true),
-  ('gerente-arrozal-3', 'Gerente USF Arrozal 3', 'gerente.arrozal3@usf.gov.br', 'GERENTE', true),
-  ('acs-ana-souza', 'Ana Maria Souza (ACS)', 'ana.souza@usf.gov.br', 'ACS', true)
-ON CONFLICT (email) DO UPDATE
-SET
-  nome = EXCLUDED.nome,
-  perfil = EXCLUDED.perfil,
-  ativo = EXCLUDED.ativo;
+create or replace function public.reconcile_user_profile(old_path text, new_uid text, profile jsonb) returns void
+language plpgsql security invoker set search_path = public
+as $$
+begin
+ if old_path not like 'usuarios/%' or profile->>'uid' <> new_uid then raise exception 'Invalid profile'; end if;
+ insert into public.app_documents(path, data) values ('usuarios/' || new_uid, profile)
+ on conflict(path) do update set data = excluded.data, updated_at = now();
+ if old_path <> 'usuarios/' || new_uid then
+  update public.app_documents set data = jsonb_set(data, '{acsId}', to_jsonb(new_uid)), updated_at = now()
+   where data->>'acsId' = substring(old_path from 10);
+  delete from public.app_documents where path = old_path;
+ end if;
+end $$;
+revoke all on function public.reconcile_user_profile(text,text,jsonb) from public, anon, authenticated;
+grant execute on function public.reconcile_user_profile(text,text,jsonb) to service_role;
+revoke all on function public.current_profile() from public, anon;
+revoke all on function public.patient_scope(jsonb) from public, anon;
+revoke all on function public.document_access(text,jsonb,boolean) from public, anon;
+grant execute on function public.current_profile(), public.patient_scope(jsonb), public.document_access(text,jsonb,boolean) to authenticated, service_role;
+-- Lock the parent row to avoid losing simultaneous visits; both writes roll back together.
+create or replace function public.append_patient_action(patient_id text, action jsonb, priority text default null, visit_date text default null) returns void
+language plpgsql security invoker set search_path = public
+as $$
+declare previous jsonb; changes jsonb;
+begin
+ if public.current_profile()->>'perfil' <> 'ACS' or public.current_profile() is null then raise exception 'Only ACS can register actions'; end if;
+ if action->>'acsId' is distinct from auth.uid()::text or action->>'patientId' is distinct from patient_id or coalesce(action->>'id','') = '' then raise exception 'Invalid action'; end if;
+ if priority is not null and priority not in ('Alta','Média','Atenção','Acompanhado') then raise exception 'Invalid priority'; end if;
+ select data into previous from public.app_documents where path = 'pacientes/' || patient_id for update;
+ if previous is null then raise exception 'Patient not found or access denied'; end if;
+ changes := jsonb_build_object('historicoAcoes', jsonb_build_array(action) || coalesce(previous->'historicoAcoes', '[]'::jsonb), 'updatedAt', now());
+ if priority is not null then changes := changes || jsonb_build_object('prioridade', priority); end if;
+ if priority = 'Acompanhado' then changes := changes || jsonb_build_object('motivosPrioridade', 'Acompanhamento realizado em ' || coalesce(action->>'dataAcao','') || ' (' || coalesce(action->>'tipoAcao','') || ')'); end if;
+ if visit_date is not null then changes := changes || jsonb_build_object('dataUltimaVisita', visit_date, 'dataUltimaVisitaACS', visit_date, 'daysSinceHomeVisit', 0, 'monthsSinceHomeVisit', 0); end if;
+ insert into public.app_documents(path,data) values ('pacientes/' || patient_id || '/acoes/' || (action->>'id'), action);
+ update public.app_documents set data = previous || changes, updated_at = now() where path = 'pacientes/' || patient_id;
+ if not found then raise exception 'Write denied'; end if;
+end $$;
+revoke all on function public.append_patient_action(text,jsonb,text,text) from public, anon;
+grant execute on function public.append_patient_action(text,jsonb,text,text) to authenticated;
+create or replace function public.import_documents(documents jsonb) returns void
+language plpgsql security invoker set search_path = public
+as $$
+begin
+ if jsonb_typeof(documents) <> 'array' then raise exception 'Expected document array'; end if;
+ insert into public.app_documents(path,data) select r->>'path', r->'data' from jsonb_array_elements(documents) r;
+end $$;
+revoke all on function public.import_documents(jsonb) from public, anon, authenticated;
+grant execute on function public.import_documents(jsonb) to service_role;
+-- Earlier schema granted anonymous access to legacy tables. Keep the records but
+-- stop browsers bypassing the canonical store's scope rules through those tables.
+do $$ declare t text; begin
+ foreach t in array array['usuario','area','microarea','controle_carga','paciente','atendimento','afericao_pressao','afericao_medidas','comorbidade','paciente_comorbidade'] loop
+  if to_regclass('public.' || t) is not null then
+    execute format('revoke all on table public.%I from anon, authenticated', t);
+    execute format('alter table public.%I enable row level security', t);
+    execute format('grant all on table public.%I to service_role', t);
+  end if;
+ end loop;
+end $$;
+commit;

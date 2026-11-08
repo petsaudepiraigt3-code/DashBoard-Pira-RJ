@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from "react";
 import { Modal } from "./modal";
 import { Patient, PatientActionType, PriorityLevel } from "@/types/dcnt";
-import { savePatientActionInFirestore } from "@/lib/firebase/patients";
+import { savePatientActionInStore } from "@/lib/store/patients";
 import { useAuth } from "@/context/auth-context";
 
 interface RegisterActionModalProps {
@@ -68,7 +68,7 @@ export function RegisterActionModal({
 
       const newVisitDate = isVisit ? actionDate : undefined;
 
-      const savedAction = await savePatientActionInFirestore(
+      const savedAction = await savePatientActionInStore(
         patient.id,
         {
           patientId: patient.id,

@@ -1,4 +1,6 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+Saúde Digital Busca Ativa — Next.js com Supabase Auth e PostgreSQL.
+
+Requer Node.js 22+. Para configurar o banco, migrar dados existentes e criar o primeiro administrador, siga [MIGRACAO-SUPABASE.md](./MIGRACAO-SUPABASE.md). Use `.env.example` como referência. A chave privada do Supabase deve ficar somente no servidor.
 
 ## Getting Started
 

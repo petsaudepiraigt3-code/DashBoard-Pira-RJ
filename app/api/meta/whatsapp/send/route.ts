@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import { AccessError, requireAccess } from '@/lib/supabase-admin';
 
 export async function POST(req: NextRequest) {
   try {
+    await requireAccess(req);
     const body = await req.json();
     const {
       to,
@@ -115,6 +117,7 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (error: any) {
+    if (error instanceof AccessError) return NextResponse.json({ error: error.message }, { status: error.status });
     console.error("Erro interno no envio de mensagem WhatsApp:", error);
     return NextResponse.json(
       { error: "Erro interno ao processar envio de mensagem." },

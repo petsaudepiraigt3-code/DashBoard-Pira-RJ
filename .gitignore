@@ -33,10 +33,12 @@ yarn-error.log*
 
 # env files
 .env*
+!.env.example
 
-# firebase service accounts
+# Legacy credentials and private migration exports
 serviceAccount*.json
 firebase-admin*.json
+migration-data*.json
 
 # vercel
 .vercel

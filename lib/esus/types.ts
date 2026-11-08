@@ -147,7 +147,7 @@ export interface ESUSParseResult {
   rows: ESUSRowValidation[];
 }
 
-export interface FirestoreImportRecord {
+export interface StoreImportRecord {
   id?: string;
   unidadeId: string;
   unidadeNome: string;
@@ -165,17 +165,19 @@ export interface FirestoreImportRecord {
   vinculosAtualizados: number;
   paCount: number;
   weightCount: number;
+  novosAtendimentos?: number;
+  novosPesos?: number;
   errorsCount: number;
   warningsCount: number;
-  status: "Concluído" | "Concluído com avisos" | "Concluído com inconsistência" | "Falhou";
+  status: "Em andamento" | "Concluído" | "Concluído com avisos" | "Concluído com inconsistência" | "Falhou";
 }
 
-export interface FirestoreImportError {
+export interface StoreImportError {
   id?: string;
   importId: string;
   rowNumber: number;
   field: string;
   value: string;
-  errorType: "Validação" | "Formatação" | "Firestore";
+  errorType: "Validação" | "Formatação" | "Store";
   message: string;
 }

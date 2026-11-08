@@ -3,7 +3,7 @@
  */
 
 /**
- * Formata qualquer data (string YYYY-MM-DD, ISO string, Date, Timestamp Firebase) para DD/MM/AAAA.
+ * Formata qualquer data (string YYYY-MM-DD, ISO string, Date, Timestamp Supabase) para DD/MM/AAAA.
  * Evita shifts de fuso horário em strings "YYYY-MM-DD" puras.
  */
 export function formatDateBR(
@@ -31,7 +31,7 @@ export function formatDateBR(
     }
   }
 
-  // 2. Trata objeto Timestamp do Firebase ou Date
+  // 2. Trata objeto Timestamp do Supabase ou Date
   let d: Date;
   if (typeof dateValue === "object" && dateValue !== null) {
     if ("toDate" in dateValue && typeof (dateValue as any).toDate === "function") {

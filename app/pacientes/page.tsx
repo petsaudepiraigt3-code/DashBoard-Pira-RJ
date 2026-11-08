@@ -2,9 +2,7 @@
 
 import React, { useState, useEffect, useMemo, Suspense } from "react";
 import { AppLayout } from "@/components/layout/app-layout";
-import { MOCK_PATIENTS } from "@/data/mock-data";
-import { getAllPatientsFromFirestore } from "@/lib/firebase/patients";
-import { getAllPatientsFromSupabase } from "@/lib/supabase/patients";
+import { getAllPatientsFromStore } from "@/lib/store/patients";
 import { Patient } from "@/types/dcnt";
 import { BadgePriority } from "@/components/ui/badge-priority";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -51,7 +49,7 @@ function PacientesContent() {
 
   const { role, userUnitId, userProfile } = useAuth();
 
-  const [patients, setPatients] = useState<Patient[]>(MOCK_PATIENTS);
+  const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [searchQuery, setSearchQuery] = useState("");
@@ -76,27 +74,16 @@ function PacientesContent() {
 
   const loadData = async () => {
     setLoading(true);
-    try {
-      const supabaseData = await getAllPatientsFromSupabase();
-      if (supabaseData && supabaseData.length > 0) {
-        setPatients(supabaseData);
-        setLoading(false);
-        return;
-      }
-    } catch (err) {
-      console.warn("Aviso ao buscar pacientes do Supabase:", err);
-    }
 
-    const realData = await getAllPatientsFromFirestore({
+
+    const realData = await getAllPatientsFromStore({
       role,
       userUnitId,
       assignedMicroareaCodes: userProfile?.assignedMicroareaCodes,
       acsName: role === "ACS" ? userProfile?.name : undefined,
       acsId: role === "ACS" ? userProfile?.uid : undefined,
     });
-    if (realData && realData.length > 0) {
-      setPatients(realData);
-    }
+    setPatients(realData || []);
     setLoading(false);
   };
 
@@ -109,7 +96,7 @@ function PacientesContent() {
       if (userProfile?.name) {
         setFilterACS(userProfile.name);
       }
-      const codes = userProfile?.assignedMicroareaCodes || ["56"];
+      const codes = userProfile?.assignedMicroareaCodes || [];
       if (codes.length > 0) {
         setFilterMicroarea(`Microárea ${codes[0]}`);
       }
@@ -143,7 +130,7 @@ function PacientesContent() {
         const pUnitId = (p as any).unidadeId || "USF-003";
         if (pUnitId !== userUnitId) return false;
       }
-      const acsCodes = userProfile?.assignedMicroareaCodes || ["56"];
+      const acsCodes = userProfile?.assignedMicroareaCodes || [];
       const patMACode = (p.microarea || "").replace(/\D/g, "").trim();
       if (acsCodes.length > 0 && !acsCodes.includes(patMACode)) return false;
     }
@@ -265,7 +252,7 @@ function PacientesContent() {
           <button
             onClick={loadData}
             className="flex items-center gap-1 rounded-lg border border-zinc-300 bg-zinc-100 px-3 py-1.5 text-xs font-semibold text-zinc-700 hover:bg-zinc-200 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 cursor-pointer"
-            title="Atualizar dados do Firestore"
+            title="Atualizar dados do Supabase"
           >
             <RefreshCw className="h-3.5 w-3.5" />
             <span>Sincronizar</span>

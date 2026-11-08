@@ -1,10 +1,9 @@
+import { supabase } from "@/lib/supabase";
 import { WhatsAppMessage, WhatsAppMessageStatus, MetaApiConfigStatus } from "@/types/messages";
-import { INITIAL_MOCK_MESSAGES } from "./mock-messages";
-import { db } from "../firebase";
-import { collection, doc, getDocs, setDoc, query, orderBy, where } from "firebase/firestore";
-import { savePatientActionInFirestore } from "../firebase/patients";
+import { db } from "@/lib/store/documents";
+import { collection, doc, getDocs, setDoc, query, orderBy, where } from "@/lib/store/documents";
+import { savePatientActionInStore } from "../store/patients";
 
-const STORAGE_KEY = "dcnt_whatsapp_messages_store";
 
 /**
  * Normaliza número de telefone brasileiro para o padrão E.164 sem '+' exigido pela API da Meta
@@ -48,38 +47,6 @@ export function formatPhoneDisplay(phone: string): string {
   return phone;
 }
 
-/**
- * Carrega mensagens salvas localmente (cache/fallback offline)
- */
-function getLocalMessages(): WhatsAppMessage[] {
-  if (typeof window === "undefined") return INITIAL_MOCK_MESSAGES;
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (!stored) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(INITIAL_MOCK_MESSAGES));
-      return INITIAL_MOCK_MESSAGES;
-    }
-    return JSON.parse(stored) as WhatsAppMessage[];
-  } catch (e) {
-    return INITIAL_MOCK_MESSAGES;
-  }
-}
-
-/**
- * Persiste mensagens no cache local
- */
-function saveLocalMessages(messages: WhatsAppMessage[]) {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
-  } catch (e) {
-    console.warn("Aviso ao salvar mensagens no localStorage:", e);
-  }
-}
-
-/**
- * Obtém todas as mensagens de um paciente ou de uma unidade/microárea
- */
 export async function getWhatsAppMessages(options?: {
   patientId?: string;
   unitId?: string;
@@ -103,16 +70,7 @@ export async function getWhatsAppMessages(options?: {
     // Falha graciosa para armazenamento local/demo
   }
 
-  // Fallback para cache local / mock
-  let local = getLocalMessages();
-  if (options?.patientId) {
-    local = local.filter((m) => m.patientId === options.patientId);
-  }
-  if (options?.microarea && options.microarea !== "Todas") {
-    const code = options.microarea.replace(/\D/g, "").trim();
-    local = local.filter((m) => (m.microarea || "").replace(/\D/g, "").trim() === code);
-  }
-  return local.sort((a, b) => a.timestamp - b.timestamp);
+  return [];
 }
 
 /**
@@ -165,13 +123,14 @@ export async function sendWhatsAppMessageViaMeta(payload: {
   try {
     const res = await fetch("/api/meta/whatsapp/send", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${(await supabase.auth.getSession()).data.session?.access_token || ""}` },
       body: JSON.stringify({
         ...payload,
         to: metaPhone,
       }),
     });
 
+    if (!res.ok) throw new Error("Não foi possível enviar a mensagem.");
     if (res.ok) {
       const data = await res.json();
       if (data.metaMessageId) {
@@ -182,25 +141,21 @@ export async function sendWhatsAppMessageViaMeta(payload: {
       }
     }
   } catch (apiErr) {
-    console.warn("Aviso ao enviar via API Meta, usando fallback local:", apiErr);
+    throw apiErr;
   }
 
-  // 2. Persistir no Firestore
+  // 2. Persistir no Store
   try {
     const docRef = doc(db, "mensagens_whatsapp", newMessage.id);
     await setDoc(docRef, newMessage);
   } catch (fsErr) {
-    // Ignorar erro do Firestore e persistir local
+    throw fsErr;
   }
-
-  // 3. Atualizar armazenamento local
-  const current = getLocalMessages();
-  saveLocalMessages([...current, newMessage]);
 
   // 4. Se solicitado, registrar ação no prontuário/linha do tempo do paciente
   if (payload.registerInTimeline) {
     try {
-      await savePatientActionInFirestore(
+      await savePatientActionInStore(
         payload.patientId,
         {
           patientId: payload.patientId,

@@ -2,9 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { AppLayout } from "@/components/layout/app-layout";
-import { MOCK_PATIENTS, MOCK_MICROAREAS } from "@/data/mock-data";
-import { getAllPatientsFromFirestore } from "@/lib/firebase/patients";
-import { getAllPatientsFromSupabase } from "@/lib/supabase/patients";
+import { getAllPatientsFromStore } from "@/lib/store/patients";
 import { MicroareaStats, Patient } from "@/types/dcnt";
 import { Modal } from "@/components/ui/modal";
 import { BarChartSVG } from "@/components/ui/charts";
@@ -14,26 +12,17 @@ import { useAuth } from "@/context/auth-context";
 export default function TerritorioPage() {
   const { role, userUnitId, userProfile } = useAuth();
 
-  const [patients, setPatients] = useState<Patient[]>(MOCK_PATIENTS);
+  const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedMicroarea, setSelectedMicroarea] = useState<MicroareaStats | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   const loadData = async () => {
     setLoading(true);
-    try {
-      const supabaseData = await getAllPatientsFromSupabase();
-      if (supabaseData && supabaseData.length > 0) {
-        setPatients(supabaseData);
-        setLoading(false);
-        return;
-      }
-    } catch (err) {
-      console.warn("Aviso ao carregar do Supabase, tentando Firestore:", err);
-    }
+
 
     try {
-      const realData = await getAllPatientsFromFirestore({
+      const realData = await getAllPatientsFromStore({
         role,
         userUnitId,
         assignedMicroareaCodes: userProfile?.assignedMicroareaCodes,
@@ -41,14 +30,10 @@ export default function TerritorioPage() {
         acsId: role === "ACS" ? userProfile?.uid : undefined,
       });
 
-      if (realData && realData.length > 0) {
-        setPatients(realData);
-      } else {
-        setPatients(MOCK_PATIENTS);
-      }
+      setPatients(realData || []);
     } catch (e) {
       console.warn("Aviso ao carregar pacientes do território:", e);
-      setPatients(MOCK_PATIENTS);
+      setPatients([]);
     } finally {
       setLoading(false);
     }
@@ -104,10 +89,6 @@ export default function TerritorioPage() {
       outdatedVisitCount: pList.filter((p) => !p.lastVisitDate || new Date(p.lastVisitDate) < new Date("2026-04-01")).length,
     };
   });
-
-  if (finalMicroareas.length === 0) {
-    finalMicroareas = MOCK_MICROAREAS;
-  }
 
   finalMicroareas.sort((a, b) => parseInt(a.code || "0", 10) - parseInt(b.code || "0", 10));
 

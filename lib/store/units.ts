@@ -9,8 +9,8 @@ import {
   query,
   where,
   serverTimestamp,
-} from "firebase/firestore";
-import { db } from "../firebase";
+} from "@/lib/store/documents";
+import { db } from "@/lib/store/documents";
 import { Patient } from "@/types/dcnt";
 
 export interface HealthUnit {
@@ -87,51 +87,9 @@ export async function recordAuditLog(log: Omit<AuditLogDoc, "id" | "createdAt">)
 }
 
 // 1. Obter todas as Unidades de Saúde ativas. Se o banco estiver limpo ou demorar para responder, retorna unidades padrão.
-export async function getAllActiveUnitsFromFirestore(): Promise<HealthUnit[]> {
-  const defaultUnits: HealthUnit[] = [
-    {
-      id: "USF-003",
-      nome: "USF Arrozal 3",
-      nomeNormalizado: "USF ARROZAL 3",
-      codigo: "USF-003",
-      cnes: "1234567",
-      tipo: "USF",
-      ativo: true,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    },
-    {
-      id: "USF-001",
-      nome: "USF Saúde da Família - Central",
-      nomeNormalizado: "USF SAUDE DA FAMILIA CENTRAL",
-      codigo: "USF-001",
-      cnes: "7654321",
-      tipo: "USF",
-      ativo: true,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    },
-  ];
-
-  try {
-    const fetchPromise = async (): Promise<HealthUnit[]> => {
-      const q = query(collection(db, "unidades"));
-      const querySnapshot = await getDocs(q);
-      const list: HealthUnit[] = [];
-      querySnapshot.forEach((docSnap) => {
-        list.push({ id: docSnap.id, ...docSnap.data() } as HealthUnit);
-      });
-      return list.length > 0 ? list : defaultUnits;
-    };
-
-    const timeoutPromise = new Promise<HealthUnit[]>((resolve) =>
-      setTimeout(() => resolve(defaultUnits), 1000)
-    );
-
-    return await Promise.race([fetchPromise(), timeoutPromise]);
-  } catch (err) {
-    return defaultUnits;
-  }
+export async function getAllActiveUnitsFromStore(): Promise<HealthUnit[]> {
+  const rows = await getDocs(collection(db, "unidades"));
+  return rows.docs.map(row => ({ ...row.data(), id: row.id } as HealthUnit)).filter(unit => unit.ativo);
 }
 
 // 2. Cadastrar nova Unidade de Saúde
@@ -158,7 +116,7 @@ export async function updateHealthUnit(id: string, updates: Partial<HealthUnit>)
 }
 
 // 4. Garantir existência de Microárea na coleção 'microareas'
-export async function ensureUnitMicroareaInFirestore(
+export async function ensureUnitMicroareaInStore(
   unidadeId: string,
   microareaOriginalStr: string
 ): Promise<{ microareaId: string; codigo: string; tipoMicroarea: TipoMicroarea }> {
@@ -197,7 +155,7 @@ export async function ensureUnitMicroareaInFirestore(
       });
     }
   } catch (err) {
-    // Tratar silenciosamente
+    throw err;
   }
 
   return { microareaId, codigo: codigoClean, tipoMicroarea };
@@ -302,8 +260,8 @@ export async function getAcsUsersByUnit(unidadeId: string): Promise<UserProfileD
   return Array.from(mapByEmail.values());
 }
 
-// 8. Buscar todos os Perfis de Usuários no Firestore
-export async function getAllUserProfilesFromFirestore(): Promise<UserProfileDoc[]> {
+// 8. Buscar todos os Perfis de Usuários no Store
+export async function getAllUserProfilesFromStore(): Promise<UserProfileDoc[]> {
   const list: UserProfileDoc[] = [];
   try {
     const q = query(collection(db, "usuarios"));
@@ -367,32 +325,6 @@ export async function createUserProfileDocument(
 export const createAcsUser = (data: { nome: string; email: string; unidadeId: string; telefone?: string }) =>
   createUserProfileDocument({ ...data, perfil: "ACS", ativo: true });
 
-// 10. Garante Perfil Piloto para "Gerente da USF Arrozal 3"
-export async function seedTestManagerProfileForArrozal3(): Promise<void> {
-  try {
-    const units = await getAllActiveUnitsFromFirestore();
-    const arrozal3 = units.find((u) => u.codigo === "USF-003") || units[0];
-
-    const managerRef = doc(db, "usuarios", "gerente-arrozal-3");
-    const snap = await getDoc(managerRef);
-
-    if (!snap.exists()) {
-      await setDoc(managerRef, {
-        uid: "gerente-arrozal-3",
-        nome: "Gerente Arrozal 3",
-        email: "gerente.arrozal3@usf.gov.br",
-        perfil: "GERENTE",
-        unidadeId: arrozal3.id,
-        ativo: true,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    }
-  } catch (err) {
-    // Ignorar
-  }
-}
-
 // 11. Obter mapa com a contagem real de pacientes por Microárea (derivado de paciente.microarea)
 export async function getPatientCountMapByMicroarea(unidadeId: string): Promise<Record<string, number>> {
   const countMap: Record<string, number> = {};
@@ -408,7 +340,7 @@ export async function getPatientCountMapByMicroarea(unidadeId: string): Promise<
       }
     });
   } catch (err) {
-    // Tratar silenciosamente
+    throw err;
   }
   return countMap;
 }
@@ -417,7 +349,7 @@ export async function getPatientCountMapByMicroarea(unidadeId: string): Promise<
 export async function migrateExistingPatientsMicroareaLinks(): Promise<{ updatedCount: number }> {
   let updatedCount = 0;
   try {
-    const units = await getAllActiveUnitsFromFirestore();
+    const units = await getAllActiveUnitsFromStore();
     const defaultUnitId = units.length > 0 ? units[0].id : "USF-003";
 
     const pSnap = await getDocs(collection(db, "pacientes"));
@@ -425,7 +357,7 @@ export async function migrateExistingPatientsMicroareaLinks(): Promise<{ updated
       const data = pDoc.data();
       const rawMA = data.microarea || data.microareaOriginal || "Não informada";
 
-      const { microareaId, codigo } = await ensureUnitMicroareaInFirestore(
+      const { microareaId, codigo } = await ensureUnitMicroareaInStore(
         data.unidadeId || defaultUnitId,
         rawMA
       );
