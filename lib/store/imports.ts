@@ -7,9 +7,9 @@ import {
   query,
   orderBy,
   limit,
-} from "firebase/firestore";
-import { db } from "../firebase";
-import { FirestoreImportRecord } from "../esus/types";
+} from "@/lib/store/documents";
+import { db } from "@/lib/store/documents";
+import { StoreImportRecord } from "../esus/types";
 
 export interface CreateImportPayload {
   tipoImportacao?: "TESTE" | "COMPLETA";
@@ -27,11 +27,13 @@ export interface CreateImportPayload {
   erros: number;
   paImportadas: number;
   antropometriasImportadas: number;
-  status: "Concluído" | "Concluído com avisos" | "Concluído com inconsistência" | "Falhou";
+  novosAtendimentos?: number;
+  novosPesos?: number;
+  status: StoreImportRecord['status'];
 }
 
 // 1. Criar novo registro de importação vinculado a uma Unidade de Saúde
-export async function createImportRecordInFirestore(
+export async function createImportRecordInStore(
   importData: CreateImportPayload
 ): Promise<string> {
   try {
@@ -51,6 +53,8 @@ export async function createImportRecordInFirestore(
       erros: importData.erros,
       paImportadas: importData.paImportadas,
       antropometriasImportadas: importData.antropometriasImportadas,
+      novosAtendimentos: importData.novosAtendimentos || 0,
+      novosPesos: importData.novosPesos || 0,
       status: importData.status,
       createdAt: new Date().toISOString(),
     });
@@ -61,7 +65,7 @@ export async function createImportRecordInFirestore(
 }
 
 // 2. Atualizar registro de importação ao finalizar processamento
-export async function updateImportRecordInFirestore(
+export async function updateImportRecordInStore(
   importId: string,
   updates: {
     novosPacientes?: number;
@@ -70,7 +74,9 @@ export async function updateImportRecordInFirestore(
     vinculosAtualizados?: number;
     paImportadas?: number;
     antropometriasImportadas?: number;
-    status?: "Concluído" | "Concluído com avisos" | "Concluído com inconsistência" | "Falhou";
+    novosAtendimentos?: number;
+    novosPesos?: number;
+    status?: StoreImportRecord['status'];
   }
 ): Promise<void> {
   try {
@@ -80,13 +86,13 @@ export async function updateImportRecordInFirestore(
       updatedAt: new Date().toISOString(),
     });
   } catch (err) {
-    // Tratar silenciosamente
+    throw err;
   }
 }
 
-// 3. Buscar histórico de importações do Firestore
-export async function getImportHistoryFromFirestore(): Promise<FirestoreImportRecord[]> {
-  const history: FirestoreImportRecord[] = [];
+// 3. Buscar histórico de importações do Store
+export async function getImportHistoryFromStore(): Promise<StoreImportRecord[]> {
+  const history: StoreImportRecord[] = [];
   try {
     const q = query(collection(db, "imports"), orderBy("dataImportacao", "desc"), limit(20));
     const querySnapshot = await getDocs(q);
@@ -121,6 +127,8 @@ export async function getImportHistoryFromFirestore(): Promise<FirestoreImportRe
         vinculosAtualizados: data.vinculosAtualizados || 0,
         paCount: data.paImportadas || 0,
         weightCount: data.antropometriasImportadas || 0,
+        novosAtendimentos: data.novosAtendimentos || 0,
+        novosPesos: data.novosPesos || 0,
         errorsCount: data.erros || 0,
         warningsCount: data.registrosComAvisos || 0,
         status: data.status || "Concluído",

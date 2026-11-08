@@ -5,13 +5,12 @@ import { AppLayout } from "@/components/layout/app-layout";
 import { MOCK_PARAMETERS } from "@/data/mock-data";
 import { DcntParameters } from "@/types/dcnt";
 import {
-  getAllActiveUnitsFromFirestore,
+  getAllActiveUnitsFromStore,
   createHealthUnit,
   getMicroareasByUnit,
   assignAcsToMicroarea,
   getAcsUsersByUnit,
-  getAllUserProfilesFromFirestore,
-  seedTestManagerProfileForArrozal3,
+  getAllUserProfilesFromStore,
   migrateExistingPatientsMicroareaLinks,
   getUnitAdministrativeDiagnostics,
   getPatientCountMapByMicroarea,
@@ -20,17 +19,13 @@ import {
   HealthUnit,
   MicroareaDoc,
   UserProfileDoc,
-} from "@/lib/firebase/units";
+} from "@/lib/store/units";
 import { useAuth } from "@/context/auth-context";
 import { useRouter } from "next/navigation";
-import { auth, db } from "@/lib/firebase";
-import { doc, updateDoc, serverTimestamp } from "firebase/firestore";
-import {
-  getControleCargasSupabase,
-  saveAreaSupabase,
-  saveMicroareaSupabase,
-} from "@/lib/supabase/patients";
-import { getImportHistoryFromFirestore } from "@/lib/firebase/imports";
+import { db } from "@/lib/store/documents";
+import { supabase } from "@/lib/supabase";
+import { doc, updateDoc, serverTimestamp } from "@/lib/store/documents";
+import { getImportHistoryFromStore } from "@/lib/store/imports";
 import {
   Settings,
   Users,
@@ -169,8 +164,7 @@ export default function ConfiguracoesPage() {
   const fetchUnits = async () => {
     setLoadingUnits(true);
     try {
-      await seedTestManagerProfileForArrozal3();
-      const list = await getAllActiveUnitsFromFirestore();
+      const list = await getAllActiveUnitsFromStore();
       setUnits(list);
 
       const targetUnitId = (role as string) === "GERENTE" && userUnitId ? userUnitId : (list.length > 0 ? list[0].id : "");
@@ -186,7 +180,7 @@ export default function ConfiguracoesPage() {
   const fetchAllUsers = async () => {
     setLoadingUsers(true);
     try {
-      const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : "";
+      const idToken = (await supabase.auth.getSession()).data.session?.access_token || "";
       const res = await fetch("/api/admin/users/list-with-auth", {
         headers: { Authorization: `Bearer ${idToken}` },
       });
@@ -241,15 +235,10 @@ export default function ConfiguracoesPage() {
   const fetchCargas = async () => {
     setLoadingCargas(true);
     try {
-      const supaCargas = await getControleCargasSupabase(50);
-      if (supaCargas && supaCargas.length > 0) {
-        setCargasHistory(supaCargas);
-        setLoadingCargas(false);
-        return;
-      }
-      const firestoreHistory = await getImportHistoryFromFirestore();
+
+      const storeHistory = await getImportHistoryFromStore();
       setCargasHistory(
-        firestoreHistory.map((item) => ({
+        storeHistory.map((item) => ({
           id_carga: item.id || Math.random().toString(),
           data_carga: item.uploadedAt?.substring(0, 10) || new Date().toISOString().substring(0, 10),
           hora_carga: item.uploadedAt?.substring(11, 16) || "00:00",
@@ -284,7 +273,7 @@ export default function ConfiguracoesPage() {
     }
     setIsCreatingUnit(true);
     try {
-      // 1. Criar no Firestore
+      // 1. Criar no Supabase
       await createHealthUnit({
         nome: newUnitForm.nome,
         codigo: newUnitForm.codigo,
@@ -294,19 +283,7 @@ export default function ConfiguracoesPage() {
       });
 
       // 2. Salvar no Supabase
-      try {
-        await saveAreaSupabase({
-          codigo: newUnitForm.codigo,
-          nome: newUnitForm.nome,
-          responsavel_nome: newUnitForm.responsavelNome || "Gerente da Unidade",
-          responsavel_cargo: newUnitForm.responsavelCargo || "Gerente da Unidade",
-          cnes: newUnitForm.cnes || null,
-          tipo: newUnitForm.tipo,
-          ativa: true,
-        });
-      } catch (e) {
-        console.warn("Aviso ao salvar área no Supabase:", e);
-      }
+
 
       await fetchUnits();
       setShowNewUnitModal(false);
@@ -327,10 +304,11 @@ export default function ConfiguracoesPage() {
   };
 
   useEffect(() => {
+    if (!userProfile) return;
     fetchUnits();
     fetchAllUsers();
     fetchCargas();
-  }, []);
+  }, [userProfile?.uid]);
 
   useEffect(() => {
     if (selectedUnitId) {
@@ -358,12 +336,12 @@ export default function ConfiguracoesPage() {
 
     try {
       if (newAcsForm.criarAuthImediato) {
-        if (!newAcsForm.senhaInicial || newAcsForm.senhaInicial.length < 6) {
-          alert("A senha inicial deve possuir no mínimo 6 caracteres.");
+        if (!newAcsForm.senhaInicial || newAcsForm.senhaInicial.length < 8) {
+          alert("A senha inicial deve possuir no mínimo 8 caracteres.");
           setIsCreatingAcs(false);
           return;
         }
-        const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : "";
+        const idToken = (await supabase.auth.getSession()).data.session?.access_token || "";
         const res = await fetch("/api/admin/users", {
           method: "POST",
           headers: {
@@ -414,8 +392,8 @@ export default function ConfiguracoesPage() {
       return;
     }
 
-    if (!newUserForm.senhaInicial || newUserForm.senhaInicial.length < 6) {
-      setUserCreationError("A senha inicial deve possuir no mínimo 6 caracteres.");
+    if (!newUserForm.senhaInicial || newUserForm.senhaInicial.length < 8) {
+      setUserCreationError("A senha inicial deve possuir no mínimo 8 caracteres.");
       return;
     }
 
@@ -433,7 +411,7 @@ export default function ConfiguracoesPage() {
     setIsCreatingUser(true);
 
     try {
-      const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : "";
+      const idToken = (await supabase.auth.getSession()).data.session?.access_token || "";
       const res = await fetch("/api/admin/users", {
         method: "POST",
         headers: {
@@ -608,8 +586,8 @@ export default function ConfiguracoesPage() {
 
     if (!createAccessTarget) return;
 
-    if (!createAccessForm.senhaInicial || createAccessForm.senhaInicial.length < 6) {
-      setCreateAccessError("A senha temporária deve possuir no mínimo 6 caracteres.");
+    if (!createAccessForm.senhaInicial || createAccessForm.senhaInicial.length < 8) {
+      setCreateAccessError("A senha temporária deve possuir no mínimo 8 caracteres.");
       return;
     }
 
@@ -621,7 +599,7 @@ export default function ConfiguracoesPage() {
     setIsCreatingAccess(true);
 
     try {
-      const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : "";
+      const idToken = (await supabase.auth.getSession()).data.session?.access_token || "";
 
       const res = await fetch("/api/admin/users/create-access", {
         method: "POST",
@@ -662,8 +640,8 @@ export default function ConfiguracoesPage() {
 
     if (!resetPassTarget) return;
 
-    if (!resetPassForm.novaSenha || resetPassForm.novaSenha.length < 6) {
-      setResetPassError("A nova senha temporária deve possuir no mínimo 6 caracteres.");
+    if (!resetPassForm.novaSenha || resetPassForm.novaSenha.length < 8) {
+      setResetPassError("A nova senha temporária deve possuir no mínimo 8 caracteres.");
       return;
     }
 
@@ -675,7 +653,7 @@ export default function ConfiguracoesPage() {
     setIsResettingPass(true);
 
     try {
-      const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : "";
+      const idToken = (await supabase.auth.getSession()).data.session?.access_token || "";
 
       const res = await fetch("/api/admin/users/reset-password", {
         method: "POST",
@@ -1291,7 +1269,7 @@ export default function ConfiguracoesPage() {
                 Gestão Server-Side de Usuários Globais
               </h2>
               <p className="text-xs text-zinc-500">
-                Reconciliação e alinhamento do Cloud Firestore com o Firebase Authentication real.
+                Reconciliação e alinhamento do Supabase com o Supabase Auth real.
               </p>
             </div>
 
@@ -1471,7 +1449,7 @@ export default function ConfiguracoesPage() {
               )}
 
               <div>
-                <label className="block font-semibold mb-1">Senha Inicial * (mínimo 6 caracteres):</label>
+                <label className="block font-semibold mb-1">Senha Inicial * (mínimo 8 caracteres):</label>
                 <input
                   type="password"
                   placeholder="••••••••"
@@ -1594,13 +1572,13 @@ export default function ConfiguracoesPage() {
                     onChange={(e) => setNewAcsForm({ ...newAcsForm, criarAuthImediato: e.target.checked })}
                     className="rounded border-zinc-300"
                   />
-                  <span>Criar conta de login no Firebase Auth imediatamente</span>
+                  <span>Criar conta de login no Supabase Auth imediatamente</span>
                 </label>
               </div>
 
               {newAcsForm.criarAuthImediato && (
                 <div>
-                  <label className="block font-semibold mb-1">Senha Inicial * (mínimo 6 caracteres):</label>
+                  <label className="block font-semibold mb-1">Senha Inicial * (mínimo 8 caracteres):</label>
                   <input
                     type="password"
                     placeholder="••••••••"
@@ -1739,12 +1717,12 @@ export default function ConfiguracoesPage() {
         </div>
       )}
 
-      {/* MODAL: CRIAR ACESSO FIREBASE AUTH */}
+      {/* MODAL: CRIAR ACESSO SUPABASE AUTH */}
       {createAccessTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
           <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 space-y-4">
             <h3 className="text-base font-bold text-zinc-900 dark:text-zinc-100">
-              Criar Acesso Firebase Auth – {createAccessTarget.nome}
+              Criar Acesso Supabase Auth – {createAccessTarget.nome}
             </h3>
 
             <div className="rounded-lg bg-zinc-50 dark:bg-zinc-800/50 p-3 space-y-1 text-xs">
@@ -1782,7 +1760,7 @@ export default function ConfiguracoesPage() {
 
             <form onSubmit={handleCreateAccessForLegacyUser} className="space-y-3 text-xs font-medium">
               <div>
-                <label className="block font-semibold mb-1">Senha Temporária * (mínimo 6 caracteres):</label>
+                <label className="block font-semibold mb-1">Senha Temporária * (mínimo 8 caracteres):</label>
                 <input
                   type="password"
                   placeholder="••••••••"
@@ -1861,7 +1839,7 @@ export default function ConfiguracoesPage() {
 
             <form onSubmit={handleDirectPasswordReset} className="space-y-3 text-xs font-medium">
               <div>
-                <label className="block font-semibold mb-1">Nova Senha Temporária * (mínimo 6 caracteres):</label>
+                <label className="block font-semibold mb-1">Nova Senha Temporária * (mínimo 8 caracteres):</label>
                 <input
                   type="password"
                   value={resetPassForm.novaSenha}

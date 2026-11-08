@@ -1,11 +1,11 @@
 "use client";
 
-import { useState } from "react";
-import { auth, db } from "@/lib/firebase";
-import { signInWithEmailAndPassword, signOut } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
-import { useRouter } from "next/navigation";
+import { useState, useEffect } from "react";
 import { useAuth } from "@/context/auth-context";
+import { db } from "@/lib/store/documents";
+import { supabase, isSupabaseConfigured } from "@/lib/supabase";
+import { doc, getDoc } from "@/lib/store/documents";
+import { useRouter } from "next/navigation";
 import { HeartPulse, Lock, Mail, AlertCircle, Loader2 } from "lucide-react";
 
 export default function LoginPage() {
@@ -14,63 +14,31 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const router = useRouter();
-  const { loginWithDevCredentials } = useAuth();
+  const { userProfile } = useAuth();
+  useEffect(() => { if (userProfile?.ativo) router.replace('/dashboard'); }, [userProfile, router]);
+
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isSupabaseConfigured) { setError('Configure a conexão com o Supabase no ambiente do sistema.'); return; }
     setError(null);
     setLoading(true);
 
-    const cleanEmail = email.trim();
-    const cleanPassword = password.trim();
-
-    // 1. Tentar autenticação de desenvolvimento / administrador de teste
-    const devResult = await loginWithDevCredentials(cleanEmail, cleanPassword);
-    if (devResult.success) {
-      router.push("/dashboard");
-      return;
-    }
-
-    // 2. Se não for a credencial de teste, tenta autenticar via Firebase
     try {
-      const userCred = await signInWithEmailAndPassword(auth, email, password);
-      const currentUser = userCred.user;
-
-      // Consultar documento usuarios/{uid} no Firestore para validação de perfil e status ativo
-      const userRef = doc(db, "usuarios", currentUser.uid);
-      const userSnap = await getDoc(userRef);
-
-      if (!userSnap.exists()) {
-        setError("Usuário autenticado, mas sem perfil cadastrado no sistema.");
+      const { data, error: authError } = await supabase.auth.signInWithPassword({ email: email.trim().toLowerCase(), password });
+      if (authError) throw authError;
+      const profile = await getDoc(doc(db, 'usuarios', data.user.id));
+      const p = profile.data();
+      if (!profile.exists() || p.ativo === false || !['ADMIN', 'GERENTE', 'ACS'].includes(p.perfil) || (p.perfil !== 'ADMIN' && !p.unidadeId)) {
+        await supabase.auth.signOut();
+        setError('Seu acesso está inativo ou sem perfil/unidade. Contate o administrador.');
         return;
       }
-
-      const userData = userSnap.data();
-      if (userData?.ativo === false) {
-        await signOut(auth);
-        setError("Usuário inativo. Entre em contato com o administrador.");
-        return;
-      }
-
-      router.push("/dashboard");
+      // The provider redirects only after loading the authorized profile.
     } catch (err: any) {
-      console.error("Erro no login Firebase:", err?.code, err?.message);
-
-      const errorCode = err?.code || "";
-      if (errorCode === "auth/invalid-credential" || errorCode === "auth/wrong-password") {
-        setError("Senha incorreta ou credenciais inválidas.");
-      } else if (errorCode === "auth/user-not-found") {
-        setError("Usuário não encontrado com este e-mail.");
-      } else if (errorCode === "auth/network-request-failed") {
-        setError("Erro de conexão de rede. Verifique sua internet.");
-      } else if (errorCode === "auth/too-many-requests") {
-        setError("Muitas tentativas malsucedidas. Tente novamente mais tarde.");
-      } else {
-        setError("Falha ao realizar login. Verifique seus dados e tente novamente.");
-      }
-    } finally {
-      setLoading(false);
-    }
+      await supabase.auth.signOut();
+      setError(err.code === 'invalid_credentials' ? 'E-mail ou senha inválidos.' : 'Não foi possível entrar. Verifique suas credenciais e a conexão.');
+    } finally { setLoading(false); }
   };
 
   return (
@@ -196,44 +164,6 @@ export default function LoginPage() {
           </button>
         </form>
 
-        {/* Credenciais de Demonstração Rápidas */}
-        <div className="mt-6 border-t border-zinc-200 pt-4 dark:border-zinc-800">
-          <p className="text-center text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-2">
-            Acesso Rápido para Testes:
-          </p>
-          <div className="grid grid-cols-3 gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                setEmail("admin@dcntsaude.gov.br");
-                setPassword("Admin@123456");
-              }}
-              className="px-2 py-1.5 text-xs font-medium bg-zinc-100 hover:bg-zinc-200 text-zinc-700 rounded-lg dark:bg-zinc-800 dark:hover:bg-zinc-700 dark:text-zinc-300 transition-colors"
-            >
-              Admin
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setEmail("gerente@dcntsaude.gov.br");
-                setPassword("Admin@123456");
-              }}
-              className="px-2 py-1.5 text-xs font-medium bg-zinc-100 hover:bg-zinc-200 text-zinc-700 rounded-lg dark:bg-zinc-800 dark:hover:bg-zinc-700 dark:text-zinc-300 transition-colors"
-            >
-              Gerente
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setEmail("acs@dcntsaude.gov.br");
-                setPassword("Admin@123456");
-              }}
-              className="px-2 py-1.5 text-xs font-medium bg-zinc-100 hover:bg-zinc-200 text-zinc-700 rounded-lg dark:bg-zinc-800 dark:hover:bg-zinc-700 dark:text-zinc-300 transition-colors"
-            >
-              ACS
-            </button>
-          </div>
-        </div>
       </div>
     </div>
   );

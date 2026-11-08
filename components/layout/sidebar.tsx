@@ -40,7 +40,7 @@ export function Sidebar({
   setIsOpenMobile: (open: boolean) => void;
 }) {
   const pathname = usePathname();
-  const { userProfile, logout, switchRole } = useAuth();
+  const { userProfile, logout } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
 
   return (
@@ -147,25 +147,6 @@ export function Sidebar({
             );
           })}
         </nav>
-
-        {/* Seletor de Perfil Simulado (Exclusivo para ADMIN em ambiente de demonstração) */}
-        {!collapsed && userProfile?.role === "ADMIN" && (
-          <div className="p-3 mx-3 mb-2 rounded-xl bg-zinc-50 border border-zinc-200 dark:bg-zinc-800/50 dark:border-zinc-800 space-y-1">
-            <div className="flex items-center gap-1.5 text-[11px] font-semibold text-zinc-500 dark:text-zinc-400">
-              <UserCheck className="h-3.5 w-3.5" />
-              <span>Simular Perfil (ADMIN):</span>
-            </div>
-            <select
-              value={userProfile?.role || "ADMIN"}
-              onChange={(e) => switchRole(e.target.value as UserRole)}
-              className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-800 shadow-xs focus:outline-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 font-medium cursor-pointer"
-            >
-              <option value="ADMIN">Administrador (Todas Unidades)</option>
-              <option value="GERENTE">Gerente de Unidade (Toda USF)</option>
-              <option value="ACS">ACS (Apenas Microárea 01)</option>
-            </select>
-          </div>
-        )}
 
         {/* Bloco de Parceria Institucional na Sidebar */}
         {!collapsed && (

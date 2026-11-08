@@ -5,21 +5,21 @@ import { AppLayout } from "@/components/layout/app-layout";
 import { parseESUSFile } from "@/lib/esus/parser";
 import { validateAndNormalizeESUSData } from "@/lib/esus/validator";
 import {
-  executeESUSImportToFirestore,
-  executeFivePatientsTestImportToFirestore,
+  executeESUSImportToStore,
+  executeFivePatientsTestImportToStore,
   ESUSImportProgress,
   FivePatientsTestResult,
 } from "@/lib/esus/importer";
-import { getImportHistoryFromFirestore } from "@/lib/firebase/imports";
-import { getExistingPatientsMap } from "@/lib/firebase/patients";
-import { getAllActiveUnitsFromFirestore, HealthUnit } from "@/lib/firebase/units";
-import { ESUSParseResult, FirestoreImportRecord } from "@/lib/esus/types";
+import { getImportHistoryFromStore } from "@/lib/store/imports";
+import { getExistingPatientsMap } from "@/lib/store/patients";
+import { getAllActiveUnitsFromStore, HealthUnit } from "@/lib/store/units";
+import { ESUSParseResult, StoreImportRecord } from "@/lib/esus/types";
 import { maskCPF, maskCNS } from "@/lib/esus/normalizer";
 import { useAuth } from "@/context/auth-context";
 import { useRouter } from "next/navigation";
 import { formatDateTimeBR } from "@/lib/utils/formatters";
-import { doc, setDoc, getDoc, serverTimestamp } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { doc, setDoc, getDoc, serverTimestamp } from "@/lib/store/documents";
+import { db } from "@/lib/store/documents";
 import {
   UploadCloud,
   CheckCircle2,
@@ -54,7 +54,7 @@ import {
 
 export default function ImportarPage() {
   const router = useRouter();
-  const { userProfile, role, userUnitId, userUnitNome, unauthorizedMessage, switchRole } = useAuth();
+  const { userProfile, role, userUnitId, userUnitNome, unauthorizedMessage } = useAuth();
 
   // Unidades de Saúde
   const [units, setUnits] = useState<HealthUnit[]>([]);
@@ -66,7 +66,7 @@ export default function ImportarPage() {
   const [parseResult, setParseResult] = useState<ESUSParseResult | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
-  // Estados do Diagnóstico Firestore
+  // Estados do Diagnóstico Store
   const [dbStatus, setDbStatus] = useState<"Pendente" | "Conectado" | "Erro">("Pendente");
   const [writeStatus, setWriteStatus] = useState<"Pendente" | "OK" | "Erro">("Pendente");
   const [readStatus, setReadStatus] = useState<"Pendente" | "OK" | "Erro">("Pendente");
@@ -78,22 +78,22 @@ export default function ImportarPage() {
   const [fivePatientsError, setFivePatientsError] = useState<string | null>(null);
   const [isTestingFivePatients, setIsTestingFivePatients] = useState(false);
 
-  // Estados de confirmação e gravação no Firestore
+  // Estados de confirmação e gravação no Supabase
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [importProgress, setImportProgress] = useState<ESUSImportProgress | null>(null);
   const [importCompleted, setImportCompleted] = useState(false);
   const [importStats, setImportStats] = useState<any>(null);
 
-  // Histórico de importações do Firestore
-  const [history, setHistory] = useState<FirestoreImportRecord[]>([]);
+  // Histórico de importações do Supabase
+  const [history, setHistory] = useState<StoreImportRecord[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
 
-  // Carregar Unidades de Saúde ativas do Firestore
+  // Carregar Unidades de Saúde ativas do Supabase
   const fetchUnits = async () => {
     setLoadingUnits(true);
     try {
-      const activeUnits = await getAllActiveUnitsFromFirestore();
+      const activeUnits = await getAllActiveUnitsFromStore();
       setUnits(activeUnits);
 
       if (role === "GERENTE" && userUnitId) {
@@ -108,21 +108,21 @@ export default function ImportarPage() {
     }
   };
 
-  // Carregar histórico inicial do Firestore
+  // Carregar histórico inicial do Supabase
   const fetchHistory = async () => {
     setLoadingHistory(true);
     try {
-      const data = await getImportHistoryFromFirestore();
-      let realFirestoreItems = data.filter((d) => d.id && !d.id.startsWith("imp-0"));
+      const data = await getImportHistoryFromStore();
+      let realStoreItems = data.filter((d) => d.id && !d.id.startsWith("imp-0"));
 
       if (role === "GERENTE" && (userUnitId || userProfile?.unitId)) {
         const targetUnit = userUnitId || userProfile?.unitId;
-        realFirestoreItems = realFirestoreItems.filter((item) => item.unidadeId === targetUnit);
+        realStoreItems = realStoreItems.filter((item) => item.unidadeId === targetUnit);
       }
 
-      setHistory(realFirestoreItems);
+      setHistory(realStoreItems);
     } catch (err: any) {
-      setLastDbError(`Firestore bloqueou o acesso ao histórico: ${err.message || err}`);
+      setLastDbError(`Supabase bloqueou o acesso ao histórico: ${err.message || err}`);
     } finally {
       setLoadingHistory(false);
     }
@@ -152,8 +152,8 @@ export default function ImportarPage() {
     );
   }
 
-  // Teste Controlado de Conexão com o Firestore (Write + Read)
-  const handleTestFirestoreConnection = async () => {
+  // Teste Controlado de Conexão com o Store (Write + Read)
+  const handleTestStoreConnection = async () => {
     setIsTestingDb(true);
     setWriteStatus("Pendente");
     setReadStatus("Pendente");
@@ -172,7 +172,7 @@ export default function ImportarPage() {
       if (snap.exists() && snap.data()?.status === "ok") {
         setReadStatus("OK");
         setDbStatus("Conectado");
-        setLastDbError("Escrita e leitura confirmadas com sucesso no Firestore.");
+        setLastDbError("Escrita e leitura confirmadas com sucesso no Supabase.");
       } else {
         throw new Error("Documento lido não retornou os dados esperados.");
       }
@@ -181,9 +181,9 @@ export default function ImportarPage() {
       setReadStatus("Erro");
       setDbStatus("Erro");
       if (err.message && err.message.includes("permission")) {
-        setLastDbError("Firestore bloqueou a gravação pelas regras de segurança. (FirebaseError: Missing or insufficient permissions)");
+        setLastDbError("Supabase bloqueou a gravação pelas regras de segurança. (SupabaseError: Missing or insufficient permissions)");
       } else {
-        setLastDbError(`Erro no teste Firestore: ${err.message || err}`);
+        setLastDbError(`Erro no teste Supabase: ${err.message || err}`);
       }
     } finally {
       setIsTestingDb(false);
@@ -219,7 +219,7 @@ export default function ImportarPage() {
     setFivePatientsError(null);
 
     try {
-      const res = await executeFivePatientsTestImportToFirestore(
+      const res = await executeFivePatientsTestImportToStore(
         validRows,
         selectedFile?.name || "relatorio.csv",
         userProfile?.name || "Gerente USF",
@@ -267,7 +267,7 @@ export default function ImportarPage() {
     }
   };
 
-  // Executar a gravação real no Firestore somente após selecionar unidade e confirmar no modal
+  // Executar a gravação real no Supabase somente após selecionar unidade e confirmar no modal
   const handleConfirmExecuteImport = async () => {
     const activeUnitId = role === "GERENTE" ? (userUnitId || userProfile?.unitId || "") : selectedUnitId;
     if (!parseResult || !selectedFile || !activeUnitId) return;
@@ -279,7 +279,7 @@ export default function ImportarPage() {
     setIsImporting(true);
 
     try {
-      const stats = await executeESUSImportToFirestore(
+      const stats = await executeESUSImportToStore(
         parseResult,
         selectedFile.name,
         `${(selectedFile.size / 1024 / 1024).toFixed(2)} MB`,
@@ -295,7 +295,7 @@ export default function ImportarPage() {
       setImportCompleted(true);
       await fetchHistory();
     } catch (err: any) {
-      alert(`Erro durante a gravação no Firestore: ${err.message}`);
+      alert(`Erro durante a gravação no Supabase: ${err.message}`);
     } finally {
       setIsImporting(false);
     }
@@ -319,35 +319,6 @@ export default function ImportarPage() {
 
   return (
     <AppLayout pageTitle="Importar Relatório e-SUS APS">
-      {/* SELETOR DE PERFIL PARA SIMULAÇÃO DE DEMO (EXCLUSIVO PARA ADMIN) */}
-      {role === "ADMIN" && userProfile?.role === "ADMIN" && (
-        <div className="flex items-center justify-between rounded-lg bg-zinc-100 dark:bg-zinc-800 p-2.5 mb-4 text-xs font-semibold">
-          <span className="text-zinc-600 dark:text-zinc-400">Modo de Simulação de Perfil (ADMIN):</span>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => switchRole("Gerente")}
-              className={`px-3 py-1 rounded-md transition-all cursor-pointer ${
-                (role as string) === "GERENTE"
-                  ? "bg-blue-600 text-white font-bold"
-                  : "bg-white dark:bg-zinc-900 text-zinc-700 dark:text-zinc-300"
-              }`}
-            >
-              Gerente USF Arrozal 3
-            </button>
-            <button
-              onClick={() => switchRole("Admin")}
-              className={`px-3 py-1 rounded-md transition-all cursor-pointer ${
-                (role as string) === "ADMIN"
-                  ? "bg-blue-600 text-white font-bold"
-                  : "bg-white dark:bg-zinc-900 text-zinc-700 dark:text-zinc-300"
-              }`}
-            >
-              Administrador (Global)
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* 1. SELEÇÃO E IDENTIFICAÇÃO DO USUÁRIO & UNIDADE */}
       <div className="rounded-xl border border-blue-200 bg-blue-50/70 p-5 shadow-2xs dark:border-blue-900/60 dark:bg-blue-950/30 space-y-3 mb-6">
         <div className="flex items-center justify-between">
@@ -428,13 +399,13 @@ export default function ImportarPage() {
         )}
       </div>
 
-      {/* PAINEL DE DIAGNÓSTICO FIRESTORE (EXCLUSIVO PARA ADMIN) */}
+      {/* PAINEL DE DIAGNÓSTICO SUPABASE (EXCLUSIVO PARA ADMIN) */}
       {role === "ADMIN" && (
         <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-2xs dark:border-zinc-800 dark:bg-zinc-900 space-y-4 mb-6">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-zinc-900 dark:text-zinc-100 font-bold text-sm">
               <Server className="h-5 w-5 text-blue-600 dark:text-blue-400 shrink-0" />
-              <h3>DIAGNÓSTICO FIRESTORE</h3>
+              <h3>DIAGNÓSTICO SUPABASE</h3>
             </div>
             <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-extrabold ${
               dbStatus === "Conectado"
@@ -444,7 +415,7 @@ export default function ImportarPage() {
                 : "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
             }`}>
               {dbStatus === "Conectado" ? <CheckCircle2 className="h-3.5 w-3.5" /> : dbStatus === "Erro" ? <AlertCircle className="h-3.5 w-3.5" /> : <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-              <span>Status Firebase: {dbStatus}</span>
+              <span>Status Supabase: {dbStatus}</span>
             </span>
           </div>
 
@@ -452,7 +423,7 @@ export default function ImportarPage() {
             <div className="p-2.5 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 border dark:border-zinc-800">
               <span className="text-zinc-500 font-semibold block">Projeto:</span>
               <span className="font-mono font-bold text-zinc-900 dark:text-zinc-100">
-                {process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || "projetodashboard-d151e"}
+                {process.env.NEXT_PUBLIC_SUPABASE_URL || "Não configurado"}
               </span>
             </div>
             <div className="p-2.5 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 border dark:border-zinc-800">
@@ -503,7 +474,7 @@ export default function ImportarPage() {
                 </span>
               </div>
 
-              {/* ESTATÍSTICAS REAIS REGISTRADAS NO FIRESTORE */}
+              {/* ESTATÍSTICAS REAIS REGISTRADAS NO SUPABASE */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-medium">
                 <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-purple-100 flex justify-between">
                   <span>Novos Pacientes:</span>
@@ -588,12 +559,12 @@ export default function ImportarPage() {
           {/* Botões de Ação de Diagnóstico */}
           <div className="flex flex-wrap items-center gap-3 pt-1">
             <button
-              onClick={handleTestFirestoreConnection}
+              onClick={handleTestStoreConnection}
               disabled={isTestingDb || isImporting}
               className="flex items-center gap-2 rounded-lg bg-zinc-900 px-4 py-2 text-xs font-bold text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200 cursor-pointer disabled:opacity-50"
             >
               {isTestingDb ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-              <span>Testar conexão Firestore</span>
+              <span>Testar conexão Supabase</span>
             </button>
 
             {parseResult && (
@@ -797,7 +768,7 @@ export default function ImportarPage() {
         </div>
       )}
 
-      {/* 4. TELA DE SUCESSO PÓS-GRAVAÇÃO NO FIRESTORE */}
+      {/* 4. TELA DE SUCESSO PÓS-GRAVAÇÃO NO SUPABASE */}
       {importCompleted && importStats && (
         <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 p-6 shadow-2xs dark:border-emerald-900/60 dark:bg-emerald-950/20 space-y-5 animate-in fade-in duration-200">
           <div className="flex items-center gap-3">
@@ -934,7 +905,7 @@ export default function ImportarPage() {
         </div>
       )}
 
-      {/* 5. HISTÓRICO REAL DE IMPORTAÇÕES DO FIRESTORE */}
+      {/* 5. HISTÓRICO REAL DE IMPORTAÇÕES DO SUPABASE */}
       <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-2xs dark:border-zinc-800 dark:bg-zinc-900 space-y-4 mt-6">
         <div className="flex items-center justify-between">
           <h3 className="text-base font-bold text-zinc-900 dark:text-zinc-50 tracking-tight">
@@ -950,7 +921,7 @@ export default function ImportarPage() {
         </div>
 
         {loadingHistory ? (
-          <div className="p-8 text-center text-xs text-zinc-400">Carregando histórico do Firestore...</div>
+          <div className="p-8 text-center text-xs text-zinc-400">Carregando histórico do Supabase...</div>
         ) : history.length === 0 ? (
           <div className="p-8 text-center text-xs font-semibold text-zinc-500 dark:text-zinc-400 border border-dashed border-zinc-200 rounded-xl dark:border-zinc-800">
             Nenhuma importação realizada.

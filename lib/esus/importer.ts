@@ -1,17 +1,11 @@
-import { writeBatch, doc, collection, serverTimestamp, setDoc, getDoc } from "firebase/firestore";
-import { db } from "../firebase";
-import { ESUSParseResult, FirestoreImportRecord, NormalizedPatientRecord } from "./types";
-import { getExistingPatientsMap, FirestorePatientDoc } from "../firebase/patients";
-import { createImportRecordInFirestore, updateImportRecordInFirestore } from "../firebase/imports";
-import { ensureUnitMicroareaInFirestore } from "../firebase/units";
+import { writeBatch, doc, collection, serverTimestamp, setDoc, getDoc } from "@/lib/store/documents";
+import { db } from "@/lib/store/documents";
+import { ESUSParseResult, StoreImportRecord, NormalizedPatientRecord } from "./types";
+import { getExistingPatientsMap, StorePatientDoc } from "../store/patients";
+import { createImportRecordInStore, updateImportRecordInStore } from "../store/imports";
+import { ensureUnitMicroareaInStore } from "../store/units";
 import { maskCPF, maskCNS } from "./normalizer";
 import { PatientCargaSnapshot, PriorityLevel } from "@/types/dcnt";
-import {
-  saveNormalizedPatientToSupabase,
-  createControleCargaSupabase,
-  updateControleCargaSupabase,
-} from "../supabase/patients";
-
 export interface ESUSImportProgress {
   step: "Preparando..." | "Importando pacientes..." | "Gravando históricos..." | "Finalizando..." | "Concluído";
   processedRows: number;
@@ -56,6 +50,28 @@ function maskName(name: string): string {
   return parts
     .map((p) => (p.length > 2 ? `${p[0]}***` : p))
     .join(" ");
+}
+
+function resolvePatient(norm: NormalizedPatientRecord, existingMap: Map<string, StorePatientDoc>) {
+  const secondary = `sec_${norm.nome.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Z]/g, '')}_${norm.dataNascimento}`;
+  const existing = (norm.cpf ? existingMap.get(norm.cpf) : undefined)
+    || (norm.cns ? existingMap.get(norm.cns) : undefined)
+    || (!norm.cpf && !norm.cns ? existingMap.get(secondary) : undefined);
+  return { existing, id: existing?.id || (norm.cpf ? `cpf_${norm.cpf}` : norm.cns ? `cns_${norm.cns}` : secondary) };
+}
+
+function indexPatient(map: Map<string, StorePatientDoc>, norm: NormalizedPatientRecord, value: StorePatientDoc) {
+  const secondary = `sec_${norm.nome.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Z]/g, '')}_${norm.dataNascimento}`;
+  for (const key of [value.id, norm.cpf, norm.cns, secondary].filter(Boolean)) map.set(key, value);
+}
+
+function clinicalEvents(norm: NormalizedPatientRecord) {
+  return [
+    { tipo: 'Médico', data: norm.lastMedicalCare },
+    { tipo: 'Enfermagem', data: norm.lastNursingCare },
+    { tipo: 'Odontológico', data: norm.lastDentalCare },
+    { tipo: 'Visita Domiciliar', data: norm.lastHomeVisit },
+  ].filter(event => !!event.data);
 }
  
 // Função para calcular deltas e evolução clínica em relação à carga imediatamente anterior
@@ -201,8 +217,8 @@ export function createSnapshotRecord(
   };
 }
 
-// 1. Execução Controlada do Teste de 5 Pacientes com Métricas Exatas no Firestore
-export async function executeFivePatientsTestImportToFirestore(
+// 1. Execução Controlada do Teste de 5 Pacientes com Métricas Exatas no Store
+export async function executeFivePatientsTestImportToStore(
   rowsToTest: NormalizedPatientRecord[],
   fileName: string = "relatorio_esus_teste.csv",
   userName: string = "Gerente da USF Arrozal 3",
@@ -230,26 +246,12 @@ export async function executeFivePatientsTestImportToFirestore(
   let novosPesos = 0;
 
   // Registrar carga no banco relacional Supabase (controle_carga)
-  const supaCargaId = await createControleCargaSupabase({
-    responsavel_carga: userName,
-    responsavel_perfil: userRole || "GERENTE",
-    area_nome: unidadeNome,
-    arquivo_nome: fileName,
-    tipo_carga: "TESTE",
-    total_registros: sliceRows.length,
-  });
+
 
   const maskedPatientsSummary: { name: string; doc: string; microarea: string; pa: string; bmi: string }[] = [];
 
   for (const norm of sliceRows) {
-    let patientDocId: string;
-    if (norm.cpf) {
-      patientDocId = `cpf_${norm.cpf}`;
-    } else if (norm.cns) {
-      patientDocId = `cns_${norm.cns}`;
-    } else {
-      patientDocId = `sec_${norm.nomeNormalizado}_${norm.dataNascimento}`;
-    }
+    const { id: patientDocId } = resolvePatient(norm, existingMap);
 
     const isReliable = !!(norm.cpf || norm.cns);
     const patientRef = doc(db, "pacientes", patientDocId);
@@ -262,7 +264,7 @@ export async function executeFivePatientsTestImportToFirestore(
     }
 
     // Garantir microárea no banco administrativo
-    const { microareaId, codigo } = await ensureUnitMicroareaInFirestore(
+    const { microareaId, codigo } = await ensureUnitMicroareaInStore(
       unidadeId,
       norm.microarea || "Não informada"
     );
@@ -280,7 +282,13 @@ export async function executeFivePatientsTestImportToFirestore(
       idade: norm.idade !== undefined ? norm.idade : null,
       sexo: norm.sexo || null,
       identidadeGenero: norm.identidadeGenero || null,
+      telefone: norm.telefoneNormalizado || prevPatientData?.telefone || null,
+      telefoneOriginal: norm.telefoneOriginal || prevPatientData?.telefoneOriginal || null,
+      dataUltimaConsulta: norm.lastMedicalCare || prevPatientData?.dataUltimaConsulta || null,
+      dataUltimoAtendimentoEnfermagem: norm.lastNursingCare || prevPatientData?.dataUltimoAtendimentoEnfermagem || null,
+      dataUltimoAtendimentoOdontologico: norm.lastDentalCare || prevPatientData?.dataUltimoAtendimentoOdontologico || null,
       unidadeId,
+      unidadeNome,
       microareaId,
       microareaCodigo: codigo,
       microareaOriginal: norm.microarea || "Não informada",
@@ -313,6 +321,7 @@ export async function executeFivePatientsTestImportToFirestore(
     };
 
     await setDoc(patientRef, { ...patientData, createdAt: serverTimestamp() }, { merge: true });
+    indexPatient(existingMap, norm, { ...prevPatientData, ...patientData, id: patientDocId } as StorePatientDoc);
 
     // Gravar snapshot na subcoleção historicoCargas para auditoria e histórico permanente
     const snapRef = doc(collection(db, "pacientes", patientDocId, "historicoCargas"), snapshot.id);
@@ -362,6 +371,7 @@ export async function executeFivePatientsTestImportToFirestore(
       const dateKey = norm.dataMedicao || "semdata";
       const antId = `ant_${dateKey}_${norm.peso}_${norm.altura}`;
       const antRef = doc(collection(db, "pacientes", patientDocId, "antropometria"), antId);
+      if (!(await getDoc(antRef)).exists()) novosPesos++;
       await setDoc(antRef, {
         peso: norm.peso,
         altura: norm.altura,
@@ -374,16 +384,14 @@ export async function executeFivePatientsTestImportToFirestore(
       }, { merge: true });
     }
 
-    // Persistir simultaneamente no Supabase PostgreSQL (Tabelas do PDF)
-    try {
-      const supaRes = await saveNormalizedPatientToSupabase(norm, unidadeNome || "USF Arrozal 3", {
-        idCarga: supaCargaId || undefined,
-      });
-      if (supaRes?.atendimentoInserido) novosAtendimentos++;
-      if (supaRes?.pesoInserido) novosPesos++;
-    } catch (e) {
-      console.warn("Aviso: falha ao salvar teste no Supabase:", e);
+    for (const event of clinicalEvents(norm)) {
+      const eventRef = doc(db, 'pacientes', patientDocId, 'atendimentos', `${event.tipo}_${event.data}`);
+      if (!(await getDoc(eventRef)).exists()) novosAtendimentos++;
+      await setDoc(eventRef, { ...event, unidadeId, origem: 'e-SUS APS', createdAt: serverTimestamp() }, { merge: true });
     }
+
+    // Persistir simultaneamente no Supabase PostgreSQL (Tabelas do PDF)
+
 
     maskedPatientsSummary.push({
       name: maskName(norm.nome),
@@ -395,18 +403,10 @@ export async function executeFivePatientsTestImportToFirestore(
   }
 
   // Atualizar registro no controle_carga do Supabase
-  if (supaCargaId) {
-    await updateControleCargaSupabase(supaCargaId, {
-      novos_pacientes: newPatients,
-      pacientes_atualizados: updatedPatients,
-      novos_atendimentos: novosAtendimentos,
-      novos_pesos: novosPesos,
-      status: "Concluído",
-    });
-  }
+
 
   // Gravar registro na coleção 'imports' com tipoImportacao: "TESTE"
-  const importId = await createImportRecordInFirestore({
+  const importId = await createImportRecordInStore({
     tipoImportacao: "TESTE",
     arquivo: fileName,
     dataImportacao: new Date().toISOString(),
@@ -422,6 +422,8 @@ export async function executeFivePatientsTestImportToFirestore(
     erros: 0,
     paImportadas: paCount,
     antropometriasImportadas: weightCount,
+    novosAtendimentos,
+    novosPesos,
     status: "Concluído",
   });
 
@@ -454,7 +456,7 @@ export async function executeFivePatientsTestImportToFirestore(
 }
 
 // 2. Importação Completa em Lotes com Validação Estrita da Soma
-export async function executeESUSImportToFirestore(
+export async function executeESUSImportToStore(
   parseResult: ESUSParseResult,
   fileName: string,
   fileSize: string,
@@ -464,7 +466,7 @@ export async function executeESUSImportToFirestore(
   onProgress?: (progress: ESUSImportProgress) => void,
   userRole?: string,
   userUnitId?: string
-): Promise<FirestoreImportRecord> {
+): Promise<StoreImportRecord> {
   const targetUnidadeId = userRole === "GERENTE" && userUnitId ? userUnitId : unidadeId;
   if (!targetUnidadeId) {
     throw new Error("Por favor, selecione uma Unidade de Saúde para realizar a importação.");
@@ -519,18 +521,11 @@ export async function executeESUSImportToFirestore(
   let novosPesosCount = 0;
 
   // Criar registro na tabela 'controle_carga' do banco relacional
-  const supaCargaId = await createControleCargaSupabase({
-    responsavel_carga: userName,
-    responsavel_perfil: userRole || "GERENTE",
-    area_nome: unidadeNome,
-    arquivo_nome: fileName,
-    tipo_carga: "COMPLETA",
-    total_registros: parseResult.totalRowsCount,
-  });
+
 
   const validRows = parseResult.rows.filter((r) => r.status !== "Erro" && r.normalizedData);
 
-  const importId = await createImportRecordInFirestore({
+  const importId = await createImportRecordInStore({
     tipoImportacao: "COMPLETA",
     arquivo: fileName,
     dataImportacao: new Date().toISOString(),
@@ -546,34 +541,24 @@ export async function executeESUSImportToFirestore(
     erros: parseResult.errorRowsCount,
     paImportadas: 0,
     antropometriasImportadas: 0,
-    status: "Concluído",
+    status: "Em andamento",
   });
 
   const BATCH_SIZE = 300;
+  try {
   let currentBatch = writeBatch(db);
   let batchOpCount = 0;
 
   updateProgress("Importando pacientes...", 0, 0, 0, 0, 0, 0, 0, 0);
 
   const createdMicroareasSet = new Map<string, { microareaId: string; codigo: string }>();
+  const newClinicalRecords = new Set<string>();
 
   for (let i = 0; i < validRows.length; i++) {
     const row = validRows[i];
     const norm = row.normalizedData!;
 
-    let patientDocId: string;
-    let existingPatient: FirestorePatientDoc | undefined;
-
-    if (norm.cpf) {
-      patientDocId = `cpf_${norm.cpf}`;
-      existingPatient = existingMap.get(norm.cpf);
-    } else if (norm.cns) {
-      patientDocId = `cns_${norm.cns}`;
-      existingPatient = existingMap.get(norm.cns);
-    } else {
-      patientDocId = `sec_${norm.nomeNormalizado}_${norm.dataNascimento}`;
-      existingPatient = existingMap.get(patientDocId);
-    }
+    const { id: patientDocId, existing: existingPatient } = resolvePatient(norm, existingMap);
 
     const isReliable = !!(norm.cpf || norm.cns);
     const needsReview = !isReliable;
@@ -586,7 +571,7 @@ export async function executeESUSImportToFirestore(
     const rawMA = norm.microarea || "Não informada";
     let maMeta = createdMicroareasSet.get(rawMA);
     if (!maMeta) {
-      maMeta = await ensureUnitMicroareaInFirestore(unidadeId, rawMA);
+      maMeta = await ensureUnitMicroareaInStore(unidadeId, rawMA);
       createdMicroareasSet.set(rawMA, maMeta);
     }
 
@@ -604,7 +589,13 @@ export async function executeESUSImportToFirestore(
       idade: norm.idade !== undefined ? norm.idade : null,
       sexo: norm.sexo || null,
       identidadeGenero: norm.identidadeGenero || null,
+      telefone: norm.telefoneNormalizado || existingPatient?.telefone || null,
+      telefoneOriginal: norm.telefoneOriginal || null,
+      dataUltimaConsulta: norm.lastMedicalCare || (existingPatient as StorePatientDoc & { dataUltimaConsulta?: string })?.dataUltimaConsulta || null,
+      dataUltimoAtendimentoEnfermagem: norm.lastNursingCare || null,
+      dataUltimoAtendimentoOdontologico: norm.lastDentalCare || null,
       unidadeId,
+      unidadeNome,
       microareaId: maMeta.microareaId,
       microareaCodigo: maMeta.codigo,
       microareaOriginal: rawMA,
@@ -648,10 +639,8 @@ export async function executeESUSImportToFirestore(
       });
       batchOpCount++;
 
-      existingMap.set(patientDocId, { ...patientData, id: patientDocId } as any);
-      if (norm.cpf) existingMap.set(norm.cpf, { ...patientData, id: patientDocId } as any);
-      if (norm.cns) existingMap.set(norm.cns, { ...patientData, id: patientDocId } as any);
     }
+    indexPatient(existingMap, norm, { ...existingPatient, ...patientData, id: patientDocId } as StorePatientDoc);
 
     // Gravar snapshot na subcoleção historicoCargas para rastreamento longitudinal completo
     const snapRef = doc(collection(db, "pacientes", patientDocId, "historicoCargas"), snapshot.id);
@@ -703,6 +692,8 @@ export async function executeESUSImportToFirestore(
       const dateKey = norm.dataMedicao || "semdata";
       const antId = `ant_${dateKey}_${norm.peso}_${norm.altura}`;
       const antRef = doc(collection(db, "pacientes", patientDocId, "antropometria"), antId);
+      if (!newClinicalRecords.has(antRef.path) && !(await getDoc(antRef)).exists()) novosPesosCount++;
+      newClinicalRecords.add(antRef.path);
 
       currentBatch.set(
         antRef,
@@ -722,16 +713,16 @@ export async function executeESUSImportToFirestore(
       weightCount++;
     }
 
-    // Persistir no Supabase PostgreSQL (Tabelas do PDF)
-    try {
-      const supaRes = await saveNormalizedPatientToSupabase(norm, unidadeNome || "USF Arrozal 3", {
-        idCarga: supaCargaId || undefined,
-      });
-      if (supaRes?.atendimentoInserido) novosAtendimentosCount++;
-      if (supaRes?.pesoInserido) novosPesosCount++;
-    } catch (e) {
-      console.warn("Aviso ao sincronizar paciente com Supabase:", e);
+    for (const event of clinicalEvents(norm)) {
+      const eventRef = doc(db, 'pacientes', patientDocId, 'atendimentos', `${event.tipo}_${event.data}`);
+      if (!newClinicalRecords.has(eventRef.path) && !(await getDoc(eventRef)).exists()) novosAtendimentosCount++;
+      newClinicalRecords.add(eventRef.path);
+      currentBatch.set(eventRef, { ...event, unidadeId, origem: 'e-SUS APS', createdAt: serverTimestamp() }, { merge: true });
+      batchOpCount++;
     }
+
+    // Persistir no Supabase PostgreSQL (Tabelas do PDF)
+
 
     if (batchOpCount >= BATCH_SIZE) {
       await currentBatch.commit();
@@ -776,7 +767,7 @@ export async function executeESUSImportToFirestore(
   const totalSuccessful = newPatientsCount + updatedPatientsCount;
   const totalAttempted = validRows.length + parseResult.errorRowsCount;
 
-  let finalStatus: FirestoreImportRecord["status"] = "Concluído";
+  let finalStatus: StoreImportRecord["status"] = "Concluído";
   if (totalSuccessful !== validRows.length || totalAttempted !== parseResult.totalRowsCount) {
     finalStatus = "Concluído com inconsistência";
   } else if (parseResult.errorRowsCount > 0) {
@@ -784,24 +775,17 @@ export async function executeESUSImportToFirestore(
   }
 
   // Atualizar controle_carga no Supabase
-  if (supaCargaId) {
-    await updateControleCargaSupabase(supaCargaId, {
-      novos_pacientes: newPatientsCount,
-      pacientes_atualizados: updatedPatientsCount,
-      novos_atendimentos: novosAtendimentosCount,
-      novos_pesos: novosPesosCount,
-      status: finalStatus,
-      detalhes: `Importação com ${validRows.length} registros válidos.`,
-    });
-  }
 
-  await updateImportRecordInFirestore(importId, {
+
+  await updateImportRecordInStore(importId, {
     novosPacientes: newPatientsCount,
     pacientesAtualizados: updatedPatientsCount,
     novosVinculos: newLinksCount,
     vinculosAtualizados: updatedLinksCount,
     paImportadas: paCount,
     antropometriasImportadas: weightCount,
+    novosAtendimentos: novosAtendimentosCount,
+    novosPesos: novosPesosCount,
     status: finalStatus,
   });
 
@@ -838,7 +822,15 @@ export async function executeESUSImportToFirestore(
     paCount,
     weightCount,
     errorsCount: parseResult.errorRowsCount,
+    novosAtendimentos: novosAtendimentosCount,
+    novosPesos: novosPesosCount,
     warningsCount: parseResult.warningRowsCount,
     status: finalStatus,
   };
+  } catch (error) {
+    // Never leave an interrupted load labelled as completed. If the database is
+    // unavailable, its initial "Em andamento" status still avoids a false success.
+    try { await updateImportRecordInStore(importId, { status: 'Falhou' }); } catch { /* Preserve original failure. */ }
+    throw error;
+  }
 }

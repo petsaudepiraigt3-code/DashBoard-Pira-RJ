@@ -5,10 +5,8 @@ import { AppLayout } from "@/components/layout/app-layout";
 import { CardIndicator } from "@/components/ui/card-indicator";
 import { BadgePriority } from "@/components/ui/badge-priority";
 import { BarChartSVG, DonutChartSVG } from "@/components/ui/charts";
-import { MOCK_PATIENTS, MOCK_MICROAREAS } from "@/data/mock-data";
-import { getAllPatientsFromFirestore } from "@/lib/firebase/patients";
-import { getAllPatientsFromSupabase } from "@/lib/supabase/patients";
-import { getUnitAdministrativeDiagnostics } from "@/lib/firebase/units";
+import { getAllPatientsFromStore } from "@/lib/store/patients";
+import { getUnitAdministrativeDiagnostics } from "@/lib/store/units";
 import { Patient } from "@/types/dcnt";
 import { useRouter } from "next/navigation";
 import { formatDateBR } from "@/lib/utils/formatters";
@@ -37,8 +35,8 @@ export default function DashboardPage() {
   const router = useRouter();
   const { role, userUnitId, userUnitNome, userProfile } = useAuth();
 
-  // Estado dos Pacientes (Firestore + Fallback Mock)
-  const [patients, setPatients] = useState<Patient[]>(MOCK_PATIENTS);
+  // Estado dos Pacientes (Supabase)
+  const [patients, setPatients] = useState<Patient[]>([]);
   const [loadingPatients, setLoadingPatients] = useState(true);
   const [coverageStats, setCoverageStats] = useState<any>(null);
 
@@ -46,30 +44,19 @@ export default function DashboardPage() {
   const [selectedPatientForAction, setSelectedPatientForAction] = useState<Patient | null>(null);
   const [isActionModalOpen, setIsActionModalOpen] = useState(false);
 
-  // Carregar dados reais (Supabase PostgreSQL prioritário com fallback Firestore)
+  // Carregar dados reais (Supabase PostgreSQL)
   useEffect(() => {
     async function loadPatients() {
-      try {
-        const supabaseData = await getAllPatientsFromSupabase();
-        if (supabaseData && supabaseData.length > 0) {
-          setPatients(supabaseData);
-          setLoadingPatients(false);
-          return;
-        }
-      } catch (err) {
-        console.warn("Aviso ao carregar do Supabase, tentando Firestore:", err);
-      }
 
-      const realData = await getAllPatientsFromFirestore({
+
+      const realData = await getAllPatientsFromStore({
         role,
         userUnitId,
         assignedMicroareaCodes: userProfile?.assignedMicroareaCodes,
         acsName: role === "ACS" ? userProfile?.name : undefined,
         acsId: role === "ACS" ? userProfile?.uid : undefined,
       });
-      if (realData && realData.length > 0) {
-        setPatients(realData);
-      }
+      setPatients(realData || []);
       setLoadingPatients(false);
     }
     loadPatients();
@@ -111,7 +98,7 @@ export default function DashboardPage() {
       if (userProfile?.name) {
         setFilterACS(userProfile.name);
       }
-      const codes = userProfile?.assignedMicroareaCodes || ["56"];
+      const codes = userProfile?.assignedMicroareaCodes || [];
       if (codes.length > 0) {
         setFilterMicroarea(`Microárea ${codes[0]}`);
       }
@@ -146,7 +133,7 @@ export default function DashboardPage() {
         const pUnitId = pat.unidadeId || "USF-003";
         if (pUnitId !== userUnitId) return false;
       }
-      const acsCodes = userProfile?.assignedMicroareaCodes || ["56"];
+      const acsCodes = userProfile?.assignedMicroareaCodes || [];
       const patMACode = (pat.microarea || "").replace(/\D/g, "").trim();
       if (acsCodes.length > 0 && !acsCodes.includes(patMACode)) return false;
     }
@@ -266,7 +253,7 @@ export default function DashboardPage() {
       {/* Aviso de Fonte de Dados */}
       <div className="flex items-center justify-between text-xs text-zinc-500 font-medium">
         <span>
-          Fonte de Dados: {loadingPatients ? "Carregando..." : "Sincronizado com Cloud Firestore"}
+          Fonte de Dados: {loadingPatients ? "Carregando..." : "Sincronizado com Supabase"}
         </span>
         <span className="italic">Este indicador não representa diagnóstico médico automático.</span>
       </div>

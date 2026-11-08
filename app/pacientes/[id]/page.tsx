@@ -2,9 +2,7 @@
 
 import React, { use, useState, useEffect } from "react";
 import { AppLayout } from "@/components/layout/app-layout";
-import { MOCK_PATIENTS } from "@/data/mock-data";
-import { getAllPatientsFromFirestore, getPatientActionsFromFirestore, getPatientHistorySnapshotsFromFirestore } from "@/lib/firebase/patients";
-import { getAllPatientsFromSupabase } from "@/lib/supabase/patients";
+import { getAllPatientsFromStore, getPatientActionsFromStore, getPatientHistorySnapshotsFromStore } from "@/lib/store/patients";
 import { Patient, PatientActionRecord, PatientCargaSnapshot } from "@/types/dcnt";
 import { useAuth } from "@/context/auth-context";
 import { BadgePriority } from "@/components/ui/badge-priority";
@@ -39,35 +37,26 @@ export default function PacienteDetalhePage({
   const router = useRouter();
   const { role, userUnitId, userProfile } = useAuth();
 
-  const [patients, setPatients] = useState<Patient[]>(MOCK_PATIENTS);
+  const [patients, setPatients] = useState<Patient[]>([]);
   const [realActions, setRealActions] = useState<PatientActionRecord[]>([]);
   const [realSnapshots, setRealSnapshots] = useState<PatientCargaSnapshot[]>([]);
 
   useEffect(() => {
     async function loadData() {
-      try {
-        const supabaseData = await getAllPatientsFromSupabase();
-        if (supabaseData && supabaseData.length > 0) {
-          setPatients(supabaseData);
-        }
-      } catch (err) {
-        console.warn("Aviso ao carregar do Supabase:", err);
-      }
 
-      const realData = await getAllPatientsFromFirestore({
+
+      const realData = await getAllPatientsFromStore({
         role,
         userUnitId,
         assignedMicroareaCodes: userProfile?.assignedMicroareaCodes,
       });
-      if (realData && realData.length > 0) {
-        setPatients((prev) => (prev.length > 0 && prev[0].id !== MOCK_PATIENTS[0].id ? prev : realData));
-      }
+      setPatients(realData);
 
       if (resolvedParams.id) {
         try {
-          const actions = await getPatientActionsFromFirestore(resolvedParams.id);
+          const actions = await getPatientActionsFromStore(resolvedParams.id);
           setRealActions(actions);
-          const snapshots = await getPatientHistorySnapshotsFromFirestore(resolvedParams.id);
+          const snapshots = await getPatientHistorySnapshotsFromStore(resolvedParams.id);
           setRealSnapshots(snapshots);
         } catch (e) {
           // Tratar silenciosamente
@@ -77,7 +66,8 @@ export default function PacienteDetalhePage({
     loadData();
   }, [role, userUnitId, userProfile, resolvedParams.id]);
 
-  const patient = patients.find((p) => p.id === resolvedParams.id) || MOCK_PATIENTS.find((p) => p.id === resolvedParams.id) || MOCK_PATIENTS[0];
+  const patient = patients.find((p) => p.id === resolvedParams.id);
+  if (!patient) return <AppLayout pageTitle="Prontuário"><p>Paciente não encontrado ou acesso não autorizado.</p></AppLayout>;
 
   // Consolidar eventos reais (do array do documento ou da subcoleção /acoes)
   const actionsFromDoc = patient.historicoAcoes || [];
@@ -101,7 +91,7 @@ export default function PacienteDetalhePage({
   const lastVisitaDomiciliar = allActions.find((act) => act.tipoAcao === "Visita Domiciliar");
 
   // Validação estrita de escopo para perfil ACS
-  const acsCodes = userProfile?.assignedMicroareaCodes || ["56"];
+  const acsCodes = userProfile?.assignedMicroareaCodes || [];
   const patMACode = (patient?.microarea || "").replace(/\D/g, "").trim();
   const patUnitId = (patient as any)?.unidadeId || "USF-003";
 

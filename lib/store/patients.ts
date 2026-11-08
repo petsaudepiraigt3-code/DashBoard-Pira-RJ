@@ -1,11 +1,12 @@
-import { collection, getDocs, doc, getDoc, setDoc, updateDoc } from "firebase/firestore";
-import { db } from "../firebase";
+import { supabase } from "@/lib/supabase";
+import { collection, getDocs, doc, getDoc, setDoc, updateDoc } from "@/lib/store/documents";
+import { db } from "@/lib/store/documents";
 import { Patient, PatientActionRecord, PatientActionType, PriorityLevel, PatientCargaSnapshot, PAMeasurement, WeightMeasurement } from "@/types/dcnt";
 import { NormalizedPatientRecord } from "../esus/types";
 import { MOCK_UNIT_NAME } from "@/data/mock-data";
 import { compareActionsChronological } from "@/lib/utils/returns";
 
-export interface FirestorePatientDoc {
+export interface StorePatientDoc {
   id: string;
   nome: string;
   cpf: string | null;
@@ -13,6 +14,12 @@ export interface FirestorePatientDoc {
   dataNascimento: string | null;
   idade: number | null;
   sexo: "Masculino" | "Feminino" | null;
+  telefone?: string | null;
+  telefone_celular?: string | null;
+  hasDiabetes?: boolean;
+  hasHypertension?: boolean;
+  isSmoker?: boolean;
+  hasCardiovascularDisease?: boolean;
   identidadeGenero: string | null;
   microarea: string | null;
 
@@ -84,13 +91,13 @@ export function computeConsolidatedLastVisitDate(data: {
   return ""; // Sem registro
 }
 
-// 1. Obter mapa de pacientes existentes no Firestore por CPF, CNS ou Secundário (Nome + Data Nasc)
-export async function getExistingPatientsMap(): Promise<Map<string, FirestorePatientDoc>> {
-  const patientMap = new Map<string, FirestorePatientDoc>();
+// 1. Obter mapa de pacientes existentes no Store por CPF, CNS ou Secundário (Nome + Data Nasc)
+export async function getExistingPatientsMap(): Promise<Map<string, StorePatientDoc>> {
+  const patientMap = new Map<string, StorePatientDoc>();
   try {
     const querySnapshot = await getDocs(collection(db, "pacientes"));
     querySnapshot.forEach((docSnap) => {
-      const data = docSnap.data() as FirestorePatientDoc;
+      const data = docSnap.data() as StorePatientDoc;
       const docWithId = { ...data, id: docSnap.id };
 
       if (data.cpf) patientMap.set(data.cpf, docWithId);
@@ -103,7 +110,7 @@ export async function getExistingPatientsMap(): Promise<Map<string, FirestorePat
       }
     });
   } catch (err) {
-    // Busca silenciosa sem logar CPFs/nomes no console por privacidade
+    throw err;
   }
   return patientMap;
 }
@@ -116,8 +123,8 @@ export interface FetchPatientsOptions {
   acsId?: string;
 }
 
-// 2. Buscar todos os pacientes da coleção 'pacientes' no Firestore com suporte a filtro de escopo
-export async function getAllPatientsFromFirestore(options?: FetchPatientsOptions): Promise<Patient[]> {
+// 2. Buscar todos os pacientes da coleção 'pacientes' no Store com suporte a filtro de escopo
+export async function getAllPatientsFromStore(options?: FetchPatientsOptions): Promise<Patient[]> {
   const list: Patient[] = [];
   try {
     // Mapeamento de Microárea -> ACS responsável a partir da coleção 'microareas'
@@ -138,7 +145,7 @@ export async function getAllPatientsFromFirestore(options?: FetchPatientsOptions
 
     const querySnapshot = await getDocs(collection(db, "pacientes"));
     querySnapshot.forEach((docSnap) => {
-      const data = docSnap.data() as FirestorePatientDoc & {
+      const data = docSnap.data() as StorePatientDoc & {
         unidadeId?: string;
         unidadeNome?: string;
         acsId?: string;
@@ -152,7 +159,7 @@ export async function getAllPatientsFromFirestore(options?: FetchPatientsOptions
       const pMicroarea = data.microarea || "Sem microárea";
       const patMACode = (pMicroarea || "").replace(/\D/g, "").trim() || data.microareaCodigo || "";
 
-      // Filtro de Escopo em nível de consulta Firestore
+      // Filtro de Escopo em nível de consulta Store
       if (options?.role === "ACS") {
         if (options.userUnitId && pUnitId !== options.userUnitId) {
           return;
@@ -265,19 +272,19 @@ export async function getAllPatientsFromFirestore(options?: FetchPatientsOptions
         cns: data.cns || "Sem CNS",
         age: data.idade || 0,
         sex: data.sexo || "Feminino",
-        phone: "(11) 90000-0000",
+        phone: data.telefone || data.telefone_celular || "",
         unit: data.unidadeNome || MOCK_UNIT_NAME,
         unidadeId: pUnitId,
         unidadeNome: data.unidadeNome || MOCK_UNIT_NAME,
         microarea: pMicroarea,
         acsName: resolvedACSName,
         isElderly: (data.idade || 0) >= 60,
-        hasHypertension: (data.pressaoSistolicaAtual && data.pressaoSistolicaAtual >= 140) || false,
-        hasDiabetes: false,
+        hasHypertension: data.hasHypertension || (data.pressaoSistolicaAtual && data.pressaoSistolicaAtual >= 140) || false,
+        hasDiabetes: data.hasDiabetes || false,
         isObese,
         isOverweight,
-        isSmoker: false,
-        hasCardiovascularDisease: false,
+        isSmoker: data.isSmoker || false,
+        hasCardiovascularDisease: data.hasCardiovascularDisease || false,
         lastPA: data.pressaoSistolicaAtual && data.pressaoDiastolicaAtual ? {
           id: `pa-${docSnap.id}`,
           date: data.dataUltimaPA || new Date().toISOString().substring(0, 10),
@@ -310,8 +317,8 @@ export async function getAllPatientsFromFirestore(options?: FetchPatientsOptions
   return list;
 }
 
-// 3. Salvar Acompanhamento/Ação real no Firestore
-export async function savePatientActionInFirestore(
+// 3. Salvar Acompanhamento/Ação real no Store
+export async function savePatientActionInStore(
   patientId: string,
   actionData: Omit<PatientActionRecord, "id" | "createdAt">,
   newPriority?: PriorityLevel,
@@ -329,51 +336,17 @@ export async function savePatientActionInFirestore(
     createdAt: new Date().toISOString(),
   };
 
-  try {
-    const patientRef = doc(db, "pacientes", patientId);
-
-    // 1. Salva documento na subcoleção pacientes/{patientId}/acoes/{actionId}
-    const acaoDocRef = doc(db, "pacientes", patientId, "acoes", actionId);
-    await setDoc(acaoDocRef, fullAction);
-
-    // 2. Atualiza documento do paciente com o histórico de ações e nova prioridade/visita
-    const patientSnap = await getDoc(patientRef);
-    if (patientSnap.exists()) {
-      const existingData = patientSnap.data();
-      const currentHistorico: PatientActionRecord[] = existingData.historicoAcoes || [];
-      const updatedHistorico = [fullAction, ...currentHistorico];
-
-      const updates: any = {
-        historicoAcoes: updatedHistorico,
-        updatedAt: new Date().toISOString(),
-      };
-
-      if (newPriority) {
-        updates.prioridade = newPriority;
-        if (newPriority === "Acompanhado") {
-          updates.motivosPrioridade = `Acompanhamento realizado em ${fullAction.dataAcao} (${fullAction.tipoAcao})`;
-        }
-      }
-
-      if (actionData.tipoAcao === "Visita Domiciliar" || newLastVisitDate) {
-        const visitDateToSave = newLastVisitDate || actionData.dataAcao;
-        updates.dataUltimaVisita = visitDateToSave;
-        updates.dataUltimaVisitaACS = visitDateToSave;
-        updates.daysSinceHomeVisit = 0;
-        updates.monthsSinceHomeVisit = 0;
-      }
-
-      await updateDoc(patientRef, updates);
-    }
-  } catch (err) {
-    console.error("Erro ao salvar ação no Firestore:", err);
-  }
+  const { error } = await supabase.rpc('append_patient_action', {
+    patient_id: patientId, action: fullAction, priority: newPriority || null,
+    visit_date: newLastVisitDate || (actionData.tipoAcao === 'Visita Domiciliar' ? actionData.dataAcao : null),
+  });
+  if (error) throw error;
 
   return fullAction;
 }
 
-// 4. Buscar Ações/Acompanhamentos reais de um paciente específico no Firestore
-export async function getPatientActionsFromFirestore(patientId: string): Promise<PatientActionRecord[]> {
+// 4. Buscar Ações/Acompanhamentos reais de um paciente específico no Store
+export async function getPatientActionsFromStore(patientId: string): Promise<PatientActionRecord[]> {
   if (!patientId) return [];
   const actionMap = new Map<string, PatientActionRecord>();
 
@@ -399,7 +372,7 @@ export async function getPatientActionsFromFirestore(patientId: string): Promise
       }
     });
   } catch (err) {
-    console.error("Erro ao buscar ações do paciente no Firestore:", err);
+    console.error("Erro ao buscar ações do paciente no Store:", err);
   }
 
   const actions = Array.from(actionMap.values());
@@ -407,8 +380,8 @@ export async function getPatientActionsFromFirestore(patientId: string): Promise
   return actions.sort((a, b) => compareActionsChronological(b, a));
 }
 
-// 5. Buscar Snapshots de Carga de um paciente específico no Firestore
-export async function getPatientHistorySnapshotsFromFirestore(patientId: string): Promise<PatientCargaSnapshot[]> {
+// 5. Buscar Snapshots de Carga de um paciente específico no Store
+export async function getPatientHistorySnapshotsFromStore(patientId: string): Promise<PatientCargaSnapshot[]> {
   if (!patientId) return [];
   const snapshotMap = new Map<string, PatientCargaSnapshot>();
 
@@ -417,7 +390,7 @@ export async function getPatientHistorySnapshotsFromFirestore(patientId: string)
     const patientRef = doc(db, "pacientes", patientId);
     const patientSnap = await getDoc(patientRef);
     if (patientSnap.exists()) {
-      const data = patientSnap.data() as FirestorePatientDoc;
+      const data = patientSnap.data() as StorePatientDoc;
       const rawCargas: PatientCargaSnapshot[] = data.historicoCargas || [];
       rawCargas.forEach((c) => {
         if (c.id) snapshotMap.set(c.id, c);
@@ -434,7 +407,7 @@ export async function getPatientHistorySnapshotsFromFirestore(patientId: string)
       }
     });
   } catch (err) {
-    console.error("Erro ao buscar histórico de cargas do paciente no Firestore:", err);
+    console.error("Erro ao buscar histórico de cargas do paciente no Store:", err);
   }
 
   const list = Array.from(snapshotMap.values());

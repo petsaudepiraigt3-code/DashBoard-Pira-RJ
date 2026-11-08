@@ -6,8 +6,7 @@ import { CardIndicator } from "@/components/ui/card-indicator";
 import { BadgePriority } from "@/components/ui/badge-priority";
 import { Modal } from "@/components/ui/modal";
 import { RegisterActionModal } from "@/components/ui/register-action-modal";
-import { MOCK_PATIENTS, MOCK_MICROAREAS } from "@/data/mock-data";
-import { getAllPatientsFromFirestore, savePatientActionInFirestore } from "@/lib/firebase/patients";
+import { getAllPatientsFromStore, savePatientActionInStore } from "@/lib/store/patients";
 import { Patient, PriorityLevel, ActiveSearchRecord, PatientActionType } from "@/types/dcnt";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/auth-context";
@@ -35,22 +34,20 @@ export default function BuscaAtivaPage() {
   const [filterPriority, setFilterPriority] = useState<string>("Todas");
   const [filterCondition, setFilterCondition] = useState("Todas");
 
-  // Lista de pacientes (Firestore + Fallback Mock)
-  const [patients, setPatients] = useState<Patient[]>(MOCK_PATIENTS);
+  // Lista de pacientes (Supabase)
+  const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(true);
 
   const loadData = async () => {
     setLoading(true);
-    const realData = await getAllPatientsFromFirestore({
+    const realData = await getAllPatientsFromStore({
       role,
       userUnitId,
       assignedMicroareaCodes: userProfile?.assignedMicroareaCodes,
       acsName: role === "ACS" ? userProfile?.name : undefined,
       acsId: role === "ACS" ? userProfile?.uid : undefined,
     });
-    if (realData && realData.length > 0) {
-      setPatients(realData);
-    }
+    setPatients(realData || []);
     setLoading(false);
   };
 
@@ -63,7 +60,7 @@ export default function BuscaAtivaPage() {
       if (userProfile?.name) {
         setFilterACS(userProfile.name);
       }
-      const codes = userProfile?.assignedMicroareaCodes || ["56"];
+      const codes = userProfile?.assignedMicroareaCodes || [];
       if (codes.length > 0) {
         setFilterMicroarea(`Microárea ${codes[0]}`);
       }
@@ -113,7 +110,7 @@ export default function BuscaAtivaPage() {
         const pUnitId = (p as any).unidadeId || "USF-003";
         if (pUnitId !== userUnitId) return false;
       }
-      const acsCodes = userProfile?.assignedMicroareaCodes || ["56"];
+      const acsCodes = userProfile?.assignedMicroareaCodes || [];
       const patMACode = (p.microarea || "").replace(/\D/g, "").trim();
       if (acsCodes.length > 0 && !acsCodes.includes(patMACode)) return false;
     }
@@ -168,8 +165,8 @@ export default function BuscaAtivaPage() {
 
     const newVisitDate = isVisit ? actionDate : undefined;
 
-    // Salva a ação de forma persistente no Cloud Firestore
-    const savedAction = await savePatientActionInFirestore(
+    // Salva a ação de forma persistente no Supabase
+    const savedAction = await savePatientActionInStore(
       selectedPatient.id,
       {
         patientId: selectedPatient.id,

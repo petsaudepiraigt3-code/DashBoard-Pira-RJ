@@ -4,11 +4,10 @@ import React, { useState, useEffect } from "react";
 import { AppLayout } from "@/components/layout/app-layout";
 import { CardIndicator } from "@/components/ui/card-indicator";
 import { LineChartSVG } from "@/components/ui/charts";
-import { getAllPatientsFromFirestore } from "@/lib/firebase/patients";
+import { getAllPatientsFromStore } from "@/lib/store/patients";
 import { Patient, PatientActionRecord } from "@/types/dcnt";
 import { useAuth } from "@/context/auth-context";
 import { Users, UserCheck, AlertTriangle, CheckCircle2, TrendingUp, BarChart, RefreshCw, Activity, Building2 } from "lucide-react";
-import { MOCK_PATIENTS } from "@/data/mock-data";
 
 export default function IndicadoresPage() {
   const { role, userUnitId, userProfile } = useAuth();
@@ -18,34 +17,14 @@ export default function IndicadoresPage() {
 
   const loadData = async () => {
     setLoading(true);
-    const realData = await getAllPatientsFromFirestore({
+    const realData = await getAllPatientsFromStore({
       role,
       userUnitId,
       assignedMicroareaCodes: userProfile?.assignedMicroareaCodes,
       acsName: role === "ACS" ? userProfile?.name : undefined,
       acsId: role === "ACS" ? userProfile?.uid : undefined,
     });
-    if (realData && realData.length > 0) {
-      setPatients(realData);
-    } else {
-      const filteredMock = MOCK_PATIENTS.filter((p: any) => {
-        if (role === "GERENTE" && userUnitId) {
-          const pUnitId = p.unidadeId || "USF-003";
-          if (pUnitId !== userUnitId) return false;
-        }
-        if (role === "ACS") {
-          if (userUnitId) {
-            const pUnitId = p.unidadeId || "USF-003";
-            if (pUnitId !== userUnitId) return false;
-          }
-          const acsCodes = userProfile?.assignedMicroareaCodes || ["56"];
-          const patMACode = (p.microarea || "").replace(/\D/g, "").trim();
-          if (acsCodes.length > 0 && !acsCodes.includes(patMACode)) return false;
-        }
-        return true;
-      });
-      setPatients(filteredMock);
-    }
+    setPatients(realData || []);
     setLoading(false);
   };
 
