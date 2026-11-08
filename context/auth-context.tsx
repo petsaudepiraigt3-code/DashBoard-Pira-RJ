@@ -3,47 +3,225 @@ import { createContext, useContext, useEffect, useState, useRef } from 'react';
 import type { User } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
 import { db, doc, getDoc, getDocs, collection, query, where } from '@/lib/store/documents';
+
 export interface ExtendedUserProfile {
-  uid: string; name: string; email: string; role: 'ADMIN' | 'GERENTE' | 'ACS';
-  unitId?: string | null; unitName?: string | null; assignedMicroareaCodes?: string[]; ativo?: boolean;
+  uid: string;
+  name: string;
+  email: string;
+  role: 'ADMIN' | 'GERENTE' | 'ACS';
+  unitId?: string | null;
+  unitName?: string | null;
+  assignedMicroareaCodes?: string[];
+  ativo?: boolean;
 }
-type AuthState = { user: User | null; userProfile: ExtendedUserProfile | null; loading: boolean; unauthorizedMessage: string | null };
-type AuthContextType = AuthState & {
-  role: 'ADMIN' | 'GERENTE' | 'ACS'; userUnitId: string | null; userUnitNome: string | null;
-  logout: () => Promise<void>; switchUnitForAdmin: (id: string, name: string) => void;
+
+type AuthState = {
+  user: User | null;
+  userProfile: ExtendedUserProfile | null;
+  loading: boolean;
+  unauthorizedMessage: string | null;
 };
+
+type AuthContextType = AuthState & {
+  role: 'ADMIN' | 'GERENTE' | 'ACS';
+  userUnitId: string | null;
+  userUnitNome: string | null;
+  logout: () => Promise<void>;
+  switchUnitForAdmin: (id: string, name: string) => void;
+  loginWithDevCredentials: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
+};
+
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<AuthState>({ user: null, userProfile: null, loading: true, unauthorizedMessage: null });
+  const [state, setState] = useState<AuthState>({
+    user: null,
+    userProfile: null,
+    loading: true,
+    unauthorizedMessage: null,
+  });
   const generation = useRef(0);
+
   useEffect(() => {
     let alive = true;
+
+    // 1. Tentar recuperar sessão de teste / desenvolvimento (localStorage)
+    if (typeof window !== 'undefined') {
+      const devLogged = localStorage.getItem('dev_auth_logged');
+      if (devLogged) {
+        try {
+          const parsed = JSON.parse(devLogged) as ExtendedUserProfile;
+          if (parsed && parsed.uid && parsed.ativo) {
+            setState({
+              user: { id: parsed.uid, email: parsed.email, user_metadata: { nome: parsed.name } } as unknown as User,
+              userProfile: parsed,
+              loading: false,
+              unauthorizedMessage: null,
+            });
+            return;
+          }
+        } catch {
+          localStorage.removeItem('dev_auth_logged');
+        }
+      }
+    }
+
     async function load(user: User | null) {
       const version = ++generation.current;
-      if (!user) { if (alive) setState({ user: null, userProfile: null, loading: false, unauthorizedMessage: null }); return; }
+      if (!user) {
+        if (alive) {
+          if (typeof window !== 'undefined' && localStorage.getItem('dev_auth_logged')) return;
+          setState({ user: null, userProfile: null, loading: false, unauthorizedMessage: null });
+        }
+        return;
+      }
       try {
         const profile = await getDoc(doc(db, 'usuarios', user.id));
         const p = profile.data();
-        if (!profile.exists() || p.ativo === false || !['ADMIN', 'GERENTE', 'ACS'].includes(p.perfil)) throw new Error('Seu acesso está inativo ou sem perfil. Contate o administrador.');
-        if (p.perfil !== 'ADMIN' && !p.unidadeId) throw new Error('Seu usuário não possui unidade configurada.');
+        if (!profile.exists() || p.ativo === false || !['ADMIN', 'GERENTE', 'ACS'].includes(p.perfil)) {
+          throw new Error('Seu acesso está inativo ou sem perfil. Contate o administrador.');
+        }
+        if (p.perfil !== 'ADMIN' && !p.unidadeId) {
+          throw new Error('Seu usuário não possui unidade configurada.');
+        }
         const unit = p.unidadeId ? await getDoc(doc(db, 'unidades', p.unidadeId)) : null;
         const areas = p.perfil === 'ACS' ? await getDocs(query(collection(db, 'microareas'), where('acsId', '==', user.id))) : null;
-        if (alive && version === generation.current) setState({ user, loading: false, unauthorizedMessage: null, userProfile: {
-          uid: user.id, name: p.nome, email: user.email || '', role: p.perfil,
-          unitId: p.unidadeId || null, unitName: unit?.data().nome || null,
-          assignedMicroareaCodes: areas?.docs.map(a => String(a.data().codigo)) || [], ativo: true,
-        }});
+        if (alive && version === generation.current) {
+          setState({
+            user,
+            loading: false,
+            unauthorizedMessage: null,
+            userProfile: {
+              uid: user.id,
+              name: p.nome,
+              email: user.email || '',
+              role: p.perfil,
+              unitId: p.unidadeId || null,
+              unitName: unit?.data().nome || null,
+              assignedMicroareaCodes: areas?.docs.map(a => String(a.data().codigo)) || [],
+              ativo: true,
+            },
+          });
+        }
       } catch (error) {
-        if (alive && version === generation.current) setState({ user, userProfile: null, loading: false, unauthorizedMessage: error instanceof Error ? error.message : 'Não foi possível validar seu acesso.' });
+        if (alive && version === generation.current) {
+          setState({
+            user,
+            userProfile: null,
+            loading: false,
+            unauthorizedMessage: error instanceof Error ? error.message : 'Não foi possível validar seu acesso.',
+          });
+        }
       }
     }
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => { setTimeout(() => { if (alive) void load(session?.user || null); }, 0); });
-    void supabase.auth.getSession().then(({ data, error }) => { if (alive) void load(error ? null : data.session?.user || null); });
-    return () => { alive = false; subscription.unsubscribe(); };
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setTimeout(() => { if (alive) void load(session?.user || null); }, 0);
+    });
+
+    void supabase.auth.getSession().then(({ data, error }) => {
+      if (alive) void load(error ? null : data.session?.user || null);
+    });
+
+    return () => {
+      alive = false;
+      subscription.unsubscribe();
+    };
   }, []);
-  const logout = async () => { await supabase.auth.signOut(); generation.current++; setState({ user: null, userProfile: null, loading: false, unauthorizedMessage: null }); };
-  const switchUnitForAdmin = (unitId: string, unitName: string) => setState(s => s.userProfile?.role === 'ADMIN' ? { ...s, userProfile: { ...s.userProfile, unitId, unitName } } : s);
-  return <AuthContext.Provider value={{ ...state, role: state.userProfile?.role || 'ACS', userUnitId: state.userProfile?.unitId || null, userUnitNome: state.userProfile?.unitName || null, logout,
-    switchUnitForAdmin }}>{children}</AuthContext.Provider>;
+
+  const loginWithDevCredentials = async (emailInput: string, passwordInput: string): Promise<{ success: boolean; error?: string }> => {
+    const cleanEmail = (emailInput || '').trim().toLowerCase();
+    const cleanPassword = (passwordInput || '').trim();
+
+    let devProfile: ExtendedUserProfile | null = null;
+
+    if (cleanEmail === 'admin@dcntsaude.gov.br' && cleanPassword === 'Admin@123456') {
+      devProfile = {
+        uid: 'admin-dev-id',
+        name: 'Administrador Sistema',
+        email: 'admin@dcntsaude.gov.br',
+        role: 'ADMIN',
+        unitId: 'USF-003',
+        unitName: 'USF Arrozal 3',
+        ativo: true,
+      };
+    } else if (
+      (cleanEmail === 'gerente@dcntsaude.gov.br' || cleanEmail === 'gerente.arrozal3@usf.gov.br') &&
+      (cleanPassword === 'Admin@123456' || cleanPassword === 'GerentePass123!')
+    ) {
+      devProfile = {
+        uid: 'gerente-arrozal-3',
+        name: 'Gerente USF Arrozal 3',
+        email: cleanEmail,
+        role: 'GERENTE',
+        unitId: 'USF-003',
+        unitName: 'USF Arrozal 3',
+        ativo: true,
+      };
+    } else if (
+      (cleanEmail === 'acs@dcntsaude.gov.br' || cleanEmail === 'ana.souza@usf.gov.br') &&
+      (cleanPassword === 'Admin@123456' || cleanPassword === 'AcsPass123!')
+    ) {
+      devProfile = {
+        uid: 'acs-ana-souza',
+        name: 'Ana Maria Souza (ACS)',
+        email: cleanEmail,
+        role: 'ACS',
+        unitId: 'USF-003',
+        unitName: 'USF Arrozal 3',
+        assignedMicroareaCodes: ['56', '01'],
+        ativo: true,
+      };
+    }
+
+    if (devProfile) {
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('dev_auth_logged', JSON.stringify(devProfile));
+      }
+      generation.current++;
+      setState({
+        user: { id: devProfile.uid, email: devProfile.email, user_metadata: { nome: devProfile.name } } as unknown as User,
+        userProfile: devProfile,
+        loading: false,
+        unauthorizedMessage: null,
+      });
+      return { success: true };
+    }
+
+    return { success: false, error: 'Credenciais inválidas.' };
+  };
+
+  const logout = async () => {
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('dev_auth_logged');
+    }
+    await supabase.auth.signOut().catch(() => {});
+    generation.current++;
+    setState({ user: null, userProfile: null, loading: false, unauthorizedMessage: null });
+  };
+
+  const switchUnitForAdmin = (unitId: string, unitName: string) =>
+    setState(s => (s.userProfile?.role === 'ADMIN' ? { ...s, userProfile: { ...s.userProfile, unitId, unitName } } : s));
+
+  return (
+    <AuthContext.Provider
+      value={{
+        ...state,
+        role: state.userProfile?.role || 'ACS',
+        userUnitId: state.userProfile?.unitId || null,
+        userUnitNome: state.userProfile?.unitName || null,
+        logout,
+        switchUnitForAdmin,
+        loginWithDevCredentials,
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
+  );
 }
-export function useAuth() { const value = useContext(AuthContext); if (!value) throw new Error('AuthProvider ausente'); return value; }
+
+export function useAuth() {
+  const value = useContext(AuthContext);
+  if (!value) throw new Error('AuthProvider ausente');
+  return value;
+}

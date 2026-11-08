@@ -14,18 +14,33 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const router = useRouter();
-  const { userProfile } = useAuth();
+  const { userProfile, loginWithDevCredentials } = useAuth();
   useEffect(() => { if (userProfile?.ativo) router.replace('/dashboard'); }, [userProfile, router]);
-
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isSupabaseConfigured) { setError('Configure a conexão com o Supabase no ambiente do sistema.'); return; }
     setError(null);
     setLoading(true);
 
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanPassword = password.trim();
+
+    // 1. Tentar login rápido com credenciais de teste / desenvolvimento
+    const devResult = await loginWithDevCredentials(cleanEmail, cleanPassword);
+    if (devResult.success) {
+      router.replace('/dashboard');
+      return;
+    }
+
+    // 2. Autenticação via Supabase Auth
+    if (!isSupabaseConfigured) {
+      setError('Configure a conexão com o Supabase no ambiente do sistema.');
+      setLoading(false);
+      return;
+    }
+
     try {
-      const { data, error: authError } = await supabase.auth.signInWithPassword({ email: email.trim().toLowerCase(), password });
+      const { data, error: authError } = await supabase.auth.signInWithPassword({ email: cleanEmail, password: cleanPassword });
       if (authError) throw authError;
       const profile = await getDoc(doc(db, 'usuarios', data.user.id));
       const p = profile.data();
@@ -38,7 +53,9 @@ export default function LoginPage() {
     } catch (err: any) {
       await supabase.auth.signOut();
       setError(err.code === 'invalid_credentials' ? 'E-mail ou senha inválidos.' : 'Não foi possível entrar. Verifique suas credenciais e a conexão.');
-    } finally { setLoading(false); }
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
