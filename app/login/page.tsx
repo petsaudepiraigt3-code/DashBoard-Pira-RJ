@@ -164,6 +164,45 @@ export default function LoginPage() {
           </button>
         </form>
 
+        {/* Credenciais de Demonstração Rápidas para Teste */}
+        <div className="mt-6 border-t border-zinc-200 pt-4 dark:border-zinc-800">
+          <p className="text-center text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-2">
+            Acesso Rápido para Testes:
+          </p>
+          <div className="grid grid-cols-3 gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setEmail("admin@dcntsaude.gov.br");
+                setPassword("Admin@123456");
+              }}
+              className="px-2 py-1.5 text-xs font-medium bg-zinc-100 hover:bg-zinc-200 text-zinc-700 rounded-lg dark:bg-zinc-800 dark:hover:bg-zinc-700 dark:text-zinc-300 transition-colors cursor-pointer text-center"
+            >
+              Admin
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setEmail("gerente@dcntsaude.gov.br");
+                setPassword("Admin@123456");
+              }}
+              className="px-2 py-1.5 text-xs font-medium bg-zinc-100 hover:bg-zinc-200 text-zinc-700 rounded-lg dark:bg-zinc-800 dark:hover:bg-zinc-700 dark:text-zinc-300 transition-colors cursor-pointer text-center"
+            >
+              Gerente
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setEmail("acs@dcntsaude.gov.br");
+                setPassword("Admin@123456");
+              }}
+              className="px-2 py-1.5 text-xs font-medium bg-zinc-100 hover:bg-zinc-200 text-zinc-700 rounded-lg dark:bg-zinc-800 dark:hover:bg-zinc-700 dark:text-zinc-300 transition-colors cursor-pointer text-center"
+            >
+              ACS
+            </button>
+          </div>
+        </div>
+
       </div>
     </div>
   );
