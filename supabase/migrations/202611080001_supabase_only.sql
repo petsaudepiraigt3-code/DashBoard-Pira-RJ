@@ -179,6 +179,9 @@ create table if not exists public.paciente (
   doenca_cardiovascular boolean default false,
   prioridade varchar(50),
   motivos_prioridade text,
+  observacao_gerente text,
+  observacao_gerente_autor varchar(255),
+  observacao_gerente_data timestamptz,
   identificacao_confiavel boolean default true,
   requer_revisao boolean default false,
   ultima_importacao_id varchar(128),
@@ -230,6 +233,9 @@ alter table public.paciente add column if not exists tabagista boolean default f
 alter table public.paciente add column if not exists doenca_cardiovascular boolean default false;
 alter table public.paciente add column if not exists prioridade varchar(50);
 alter table public.paciente add column if not exists motivos_prioridade text;
+alter table public.paciente add column if not exists observacao_gerente text;
+alter table public.paciente add column if not exists observacao_gerente_autor varchar(255);
+alter table public.paciente add column if not exists observacao_gerente_data timestamptz;
 alter table public.paciente add column if not exists identificacao_confiavel boolean default true;
 alter table public.paciente add column if not exists requer_revisao boolean default false;
 alter table public.paciente add column if not exists ultima_importacao_id varchar(128);
@@ -299,6 +305,25 @@ create table if not exists public.acao_paciente (
   observacoes text,
   created_at timestamptz default now()
 );
+
+-- 2.10b TABELA DE OBSERVAÇÕES DA GERÊNCIA POR PACIENTE (COM HISTÓRICO DE EDIÇÕES)
+create table if not exists public.observacao_gerente_paciente (
+  id_registro varchar(128) primary key,
+  id_observacao varchar(128) not null,
+  id_paciente integer not null references public.paciente(id_paciente) on delete cascade,
+  patient_doc_id varchar(128),
+  unidade_id varchar(100),
+  gerente_id varchar(128),
+  gerente_nome varchar(255),
+  gerente_perfil varchar(50) default 'GERENTE',
+  tipo_evento varchar(30) not null default 'CRIACAO',
+  categoria varchar(100),
+  observacao text not null,
+  observacao_anterior text,
+  data_registro timestamptz not null default now(),
+  created_at timestamptz default now()
+);
+create index if not exists idx_obs_gerente_paciente_data on public.observacao_gerente_paciente(id_paciente, data_registro desc);
 
 -- 2.11 TABELA DE PARÂMETROS CLÍNICOS DCNT
 create table if not exists public.parametros_dcnt (
@@ -974,6 +999,44 @@ begin
         end loop;
       end if;
 
+      -- Sincroniza observação atual da gerência no registro do paciente (se presente)
+      if d ? 'observacaoGerenteAtual' and jsonb_typeof(d->'observacaoGerenteAtual') = 'object' then
+        update public.paciente set
+          observacao_gerente = d #>> '{observacaoGerenteAtual,texto}',
+          observacao_gerente_autor = d #>> '{observacaoGerenteAtual,autorNome}',
+          observacao_gerente_data = now()
+        where id_paciente = v_id_paciente;
+      end if;
+
+      -- Sincroniza histórico de observações da gerência (se presente)
+      if jsonb_typeof(d->'historicoObservacoesGerente') = 'array' then
+        for v_act in select * from jsonb_array_elements(d->'historicoObservacoesGerente') loop
+          if coalesce(v_act->>'id', '') <> '' and coalesce(v_act->>'textoNovo', '') <> '' then
+            insert into public.observacao_gerente_paciente (
+              id_registro, id_observacao, id_paciente, patient_doc_id, unidade_id,
+              gerente_id, gerente_nome, gerente_perfil, tipo_evento, categoria,
+              observacao, observacao_anterior, data_registro
+            )
+            values (
+              v_act->>'id',
+              coalesce(nullif(trim(v_act->>'observacaoId'), ''), v_act->>'id'),
+              v_id_paciente,
+              v_parts[2],
+              v_unit_code,
+              v_act->>'autorId',
+              v_act->>'autorNome',
+              coalesce(nullif(trim(v_act->>'autorPerfil'), ''), 'GERENTE'),
+              coalesce(nullif(trim(v_act->>'tipoEvento'), ''), 'CRIACAO'),
+              coalesce(nullif(trim(v_act->>'categoriaNova'), ''), 'Observação Geral'),
+              v_act->>'textoNovo',
+              nullif(v_act->>'textoAnterior', ''),
+              now()
+            )
+            on conflict (id_registro) do nothing;
+          end if;
+        end loop;
+      end if;
+
       return new;
     elsif array_length(v_parts, 1) = 4 then
       select id_paciente into v_id_paciente from public.paciente where doc_id = v_parts[2] limit 1;
@@ -1028,6 +1091,14 @@ begin
         on conflict (id_acao) do update set
           resultado = excluded.resultado,
           observacoes = excluded.observacoes;
+      elsif v_parts[3] = 'observacoesGerente' then
+        if coalesce(trim(d->>'texto'), '') <> '' then
+          update public.paciente set
+            observacao_gerente = d->>'texto',
+            observacao_gerente_autor = d->>'autorNome',
+            observacao_gerente_data = now()
+          where id_paciente = v_id_paciente;
+        end if;
       end if;
       return new;
     end if;
@@ -1142,6 +1213,11 @@ declare op jsonb; previous jsonb;
 begin
  if jsonb_typeof(operations) <> 'array' or jsonb_array_length(operations) > 500 then raise exception 'Invalid batch'; end if;
  for op in select * from jsonb_array_elements(operations) loop
+   if split_part(op->>'path', '/', 1) = 'pacientes' and public.current_profile()->>'perfil' = 'ACS' then
+     if array_length(string_to_array(op->>'path', '/'), 1) = 2 and ((op->'data') ? 'observacoesGerente' or (op->'data') ? 'observacaoGerenteAtual' or (op->'data') ? 'historicoObservacoesGerente') then
+       raise exception 'Only GERENTE or ADMIN can modify manager observations';
+     end if;
+   end if;
    previous := null;
    select data into previous from public.app_documents where path = op->>'path' for update;
    if previous is not null then
@@ -1199,6 +1275,70 @@ end $$;
 revoke all on function public.append_patient_action(text,jsonb,text,text) from public, anon;
 grant execute on function public.append_patient_action(text,jsonb,text,text) to authenticated;
 
+-- Transactional creation and edition of Manager Observations on a patient with full history log.
+create or replace function public.save_manager_patient_observation(patient_id text, observation jsonb, history_entry jsonb) returns void
+language plpgsql security invoker set search_path = public
+as $$
+declare
+  actor jsonb := public.current_profile();
+  previous jsonb;
+  existing_obs jsonb;
+  updated_obs_list jsonb := '[]'::jsonb;
+  updated_hist_list jsonb;
+  obs_item jsonb;
+  found_existing boolean := false;
+  changes jsonb;
+begin
+  if actor is null or coalesce(actor->>'perfil', '') not in ('GERENTE', 'ADMIN') then
+    raise exception 'Only GERENTE or ADMIN can add or edit patient observations';
+  end if;
+  if coalesce(observation->>'id', '') = '' or observation->>'patientId' is distinct from patient_id or coalesce(trim(observation->>'texto'), '') = '' then
+    raise exception 'Invalid observation payload';
+  end if;
+  if coalesce(history_entry->>'id', '') = '' then
+    raise exception 'Invalid observation history entry';
+  end if;
+
+  select data into previous from public.app_documents where path = 'pacientes/' || patient_id for update;
+  if previous is null or not public.patient_scope(previous) then
+    raise exception 'Patient not found or access denied';
+  end if;
+
+  existing_obs := coalesce(previous->'observacoesGerente', '[]'::jsonb);
+  if jsonb_typeof(existing_obs) = 'array' then
+    for obs_item in select * from jsonb_array_elements(existing_obs) loop
+      if obs_item->>'id' = observation->>'id' then
+        updated_obs_list := updated_obs_list || jsonb_build_array(observation);
+        found_existing := true;
+      else
+        updated_obs_list := updated_obs_list || jsonb_build_array(obs_item);
+      end if;
+    end loop;
+  end if;
+
+  if not found_existing then
+    updated_obs_list := jsonb_build_array(observation) || updated_obs_list;
+  end if;
+
+  updated_hist_list := jsonb_build_array(history_entry) || coalesce(previous->'historicoObservacoesGerente', '[]'::jsonb);
+
+  changes := jsonb_build_object(
+    'observacaoGerenteAtual', observation,
+    'observacoesGerente', updated_obs_list,
+    'historicoObservacoesGerente', updated_hist_list,
+    'updatedAt', now()
+  );
+
+  insert into public.app_documents(path, data, updated_at)
+  values ('pacientes/' || patient_id || '/observacoesGerente/' || (observation->>'id'), observation, now())
+  on conflict (path) do update set data = excluded.data, updated_at = now();
+
+  update public.app_documents set data = previous || changes, updated_at = now() where path = 'pacientes/' || patient_id;
+  if not found then raise exception 'Write denied'; end if;
+end $$;
+revoke all on function public.save_manager_patient_observation(text,jsonb,jsonb) from public, anon;
+grant execute on function public.save_manager_patient_observation(text,jsonb,jsonb) to authenticated;
+
 create or replace function public.import_documents(documents jsonb) returns void
 language plpgsql security invoker set search_path = public
 as $$
@@ -1211,7 +1351,7 @@ grant execute on function public.import_documents(jsonb) to service_role;
 
 -- Protect relational tables from anonymous access while allowing authenticated and service_role access
 do $$ declare t text; begin
- foreach t in array array['usuario','area','microarea','controle_carga','paciente','atendimento','afericao_pressao','afericao_medidas','comorbidade','paciente_comorbidade','acao_paciente','parametros_dcnt'] loop
+ foreach t in array array['usuario','area','microarea','controle_carga','paciente','atendimento','afericao_pressao','afericao_medidas','comorbidade','paciente_comorbidade','acao_paciente','observacao_gerente_paciente','parametros_dcnt'] loop
   if to_regclass('public.' || t) is not null then
     execute format('revoke all on table public.%I from anon', t);
     execute format('grant select, insert, update, delete on table public.%I to authenticated, service_role', t);

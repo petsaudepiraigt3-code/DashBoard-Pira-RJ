@@ -6,6 +6,7 @@ import { getAllPatientsFromStore } from "@/lib/store/patients";
 import { DEFAULT_DCNT_PARAMETERS, getDcntParametersFromStore } from "@/lib/store/parameters";
 import { DcntParameters, Patient } from "@/types/dcnt";
 import { BadgePriority } from "@/components/ui/badge-priority";
+import { ManagerObservationModal } from "@/components/ui/manager-observation-modal";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Search,
@@ -18,6 +19,7 @@ import {
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
+  ClipboardList,
 } from "lucide-react";
 import { useAuth } from "@/context/auth-context";
 import { formatDateBR } from "@/lib/utils/formatters";
@@ -62,6 +64,10 @@ function PacientesContent() {
   // Estado de Paginação
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
+
+  // Estado do Modal de Observações da Gerência
+  const [obsPatient, setObsPatient] = useState<Patient | null>(null);
+  const [isObsModalOpen, setIsObsModalOpen] = useState(false);
 
   // Reiniciar para página 1 sempre que os filtros mudarem
   useEffect(() => {
@@ -302,6 +308,23 @@ function PacientesContent() {
                       <div className="text-[11px] text-zinc-500">
                         {p.cpf !== "Sem CPF" ? `CPF: ${p.cpf}` : p.cns !== "Sem CNS" ? `CNS: ${p.cns}` : "Sem documento"}
                       </div>
+                      {p.observacaoGerenteAtual && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setObsPatient(p);
+                            setIsObsModalOpen(true);
+                          }}
+                          className="mt-1 inline-flex items-center gap-1 rounded-md border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-800 hover:bg-indigo-100 dark:border-indigo-800 dark:bg-indigo-950/60 dark:text-indigo-300 text-left max-w-xs truncate cursor-pointer"
+                          title={`Observação da Gerência (${p.observacaoGerenteAtual.categoria}): ${p.observacaoGerenteAtual.texto}`}
+                        >
+                          <ClipboardList className="h-3 w-3 shrink-0" />
+                          <span className="truncate">
+                            Obs. Gerência: {p.observacaoGerenteAtual.texto}
+                          </span>
+                        </button>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-zinc-700 dark:text-zinc-300">
                       {p.age} anos ({p.sex.substring(0, 1)})
@@ -323,16 +346,46 @@ function PacientesContent() {
                       <BadgePriority priority={p.priority} />
                     </td>
                     <td className="px-4 py-3 text-right">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          router.push(`/pacientes/${p.id}`);
-                        }}
-                        className="inline-flex items-center gap-1 rounded-lg bg-zinc-100 px-2.5 py-1 text-xs font-semibold text-zinc-800 hover:bg-blue-50 hover:text-blue-600 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-blue-950 dark:hover:text-blue-300 transition-colors cursor-pointer"
-                      >
-                        <Eye className="h-3.5 w-3.5" />
-                        <span>Ver Prontuário</span>
-                      </button>
+                      <div className="flex items-center justify-end gap-1.5">
+                        {(role === "GERENTE" || role === "ADMIN") && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setObsPatient(p);
+                              setIsObsModalOpen(true);
+                            }}
+                            className="inline-flex items-center gap-1 rounded-lg bg-indigo-50 border border-indigo-200 px-2.5 py-1 text-xs font-bold text-indigo-700 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:border-indigo-800 dark:text-indigo-300 transition-colors cursor-pointer"
+                            title="Acrescentar ou editar observação da gerência"
+                          >
+                            <ClipboardList className="h-3.5 w-3.5" />
+                            <span>{p.observacaoGerenteAtual ? "Editar Obs." : "Observação"}</span>
+                          </button>
+                        )}
+                        {role === "ACS" && p.observacaoGerenteAtual && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setObsPatient(p);
+                              setIsObsModalOpen(true);
+                            }}
+                            className="inline-flex items-center gap-1 rounded-lg bg-indigo-50 border border-indigo-200 px-2.5 py-1 text-xs font-bold text-indigo-700 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:border-indigo-800 dark:text-indigo-300 transition-colors cursor-pointer"
+                            title="Visualizar observação e histórico da Gerência da Unidade"
+                          >
+                            <ClipboardList className="h-3.5 w-3.5" />
+                            <span>Obs. Gerência</span>
+                          </button>
+                        )}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            router.push(`/pacientes/${p.id}`);
+                          }}
+                          className="inline-flex items-center gap-1 rounded-lg bg-zinc-100 px-2.5 py-1 text-xs font-semibold text-zinc-800 hover:bg-blue-50 hover:text-blue-600 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-blue-950 dark:hover:text-blue-300 transition-colors cursor-pointer"
+                        >
+                          <Eye className="h-3.5 w-3.5" />
+                          <span>Ver Prontuário</span>
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -419,6 +472,19 @@ function PacientesContent() {
           </div>
         </div>
       </div>
+
+      {/* Modal de Observações da Gerência da Unidade (com Histórico para o ACS) */}
+      <ManagerObservationModal
+        isOpen={isObsModalOpen}
+        onClose={() => setIsObsModalOpen(false)}
+        patient={obsPatient}
+        onPatientUpdated={(updatedPatient) => {
+          setObsPatient(updatedPatient);
+          setPatients((prev) =>
+            prev.map((p) => (p.id === updatedPatient.id ? updatedPatient : p))
+          );
+        }}
+      />
     </AppLayout>
   );
 }

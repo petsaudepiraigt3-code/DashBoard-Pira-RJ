@@ -6,6 +6,7 @@ import { CardIndicator } from "@/components/ui/card-indicator";
 import { BadgePriority } from "@/components/ui/badge-priority";
 import { Modal } from "@/components/ui/modal";
 import { RegisterActionModal } from "@/components/ui/register-action-modal";
+import { ManagerObservationModal } from "@/components/ui/manager-observation-modal";
 import { getAllPatientsFromStore, savePatientActionInStore } from "@/lib/store/patients";
 import { Patient, PriorityLevel, ActiveSearchRecord, PatientActionType } from "@/types/dcnt";
 import { useRouter } from "next/navigation";
@@ -21,6 +22,7 @@ import {
   PlusCircle,
   Check,
   RefreshCw,
+  ClipboardList,
 } from "lucide-react";
 
 export default function BuscaAtivaPage() {
@@ -70,6 +72,8 @@ export default function BuscaAtivaPage() {
   // Estado do Modal de Registro de Ação
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [obsPatient, setObsPatient] = useState<Patient | null>(null);
+  const [isObsModalOpen, setIsObsModalOpen] = useState(false);
   const [actionType, setActionType] = useState<ActiveSearchRecord["action"]>("Visita Domiciliar");
   const [actionDate, setActionDate] = useState(new Date().toISOString().substring(0, 10));
   const [actionResult, setActionResult] = useState("");
@@ -399,6 +403,23 @@ export default function BuscaAtivaPage() {
                       <div className="text-[11px] text-zinc-600 dark:text-zinc-400">
                         {p.cpf !== "Sem CPF" ? `CPF: ${p.cpf}` : p.cns !== "Sem CNS" ? `CNS: ${p.cns}` : "Sem doc"}
                       </div>
+                      {p.observacaoGerenteAtual && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setObsPatient(p);
+                            setIsObsModalOpen(true);
+                          }}
+                          className="mt-1 inline-flex items-center gap-1 rounded-md border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-800 hover:bg-indigo-100 dark:border-indigo-800 dark:bg-indigo-950/60 dark:text-indigo-300 text-left max-w-xs truncate cursor-pointer"
+                          title={`Observação da Gerência (${p.observacaoGerenteAtual.categoria}): ${p.observacaoGerenteAtual.texto}`}
+                        >
+                          <ClipboardList className="h-3 w-3 shrink-0" />
+                          <span className="truncate">
+                            Obs. Gerência: {p.observacaoGerenteAtual.texto}
+                          </span>
+                        </button>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-zinc-700 dark:text-zinc-300">
                       {p.age} anos ({p.sex.substring(0, 1)})
@@ -427,11 +448,37 @@ export default function BuscaAtivaPage() {
                       <div className="flex items-center justify-end gap-1.5">
                         <button
                           onClick={() => router.push(`/pacientes/${p.id}`)}
-                          className="rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+                          className="rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100 cursor-pointer"
                           title="Ver prontuário do paciente"
                         >
                           <Eye className="h-4 w-4" />
                         </button>
+                        {(role === "GERENTE" || role === "ADMIN") && (
+                          <button
+                            onClick={() => {
+                              setObsPatient(p);
+                              setIsObsModalOpen(true);
+                            }}
+                            className="flex items-center gap-1 rounded-lg bg-indigo-600 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-indigo-700 shadow-2xs transition-colors cursor-pointer"
+                            title="Acrescentar ou editar observação da gerência neste paciente"
+                          >
+                            <ClipboardList className="h-3.5 w-3.5" />
+                            <span>{p.observacaoGerenteAtual ? "Editar Obs." : "Observação"}</span>
+                          </button>
+                        )}
+                        {role === "ACS" && p.observacaoGerenteAtual && (
+                          <button
+                            onClick={() => {
+                              setObsPatient(p);
+                              setIsObsModalOpen(true);
+                            }}
+                            className="flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-1 text-[11px] font-bold text-indigo-700 hover:bg-indigo-100 dark:border-indigo-800 dark:bg-indigo-950/60 dark:text-indigo-300 transition-colors cursor-pointer"
+                            title="Visualizar observação e histórico da Gerência da Unidade"
+                          >
+                            <ClipboardList className="h-3.5 w-3.5" />
+                            <span>Obs. Gerência</span>
+                          </button>
+                        )}
                         {role === "ACS" && (
                           <button
                             onClick={() => handleOpenActionModal(p)}
@@ -466,6 +513,19 @@ export default function BuscaAtivaPage() {
         onClose={() => setIsModalOpen(false)}
         patient={selectedPatient}
         onActionSaved={(updatedPatient) => {
+          setPatients((prev) =>
+            prev.map((p) => (p.id === updatedPatient.id ? updatedPatient : p))
+          );
+        }}
+      />
+
+      {/* Modal de Observações da Gerência da Unidade (com Histórico para o ACS) */}
+      <ManagerObservationModal
+        isOpen={isObsModalOpen}
+        onClose={() => setIsObsModalOpen(false)}
+        patient={obsPatient}
+        onPatientUpdated={(updatedPatient) => {
+          setObsPatient(updatedPatient);
           setPatients((prev) =>
             prev.map((p) => (p.id === updatedPatient.id ? updatedPatient : p))
           );

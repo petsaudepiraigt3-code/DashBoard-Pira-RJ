@@ -6,9 +6,16 @@ import {
   getAllPatientsFromStore,
   getPatientActionsFromStore,
   getPatientHistorySnapshotsFromStore,
+  getPatientManagerObservationsFromStore,
   updatePatientConditionsInStore,
 } from "@/lib/store/patients";
-import { Patient, PatientActionRecord, PatientCargaSnapshot } from "@/types/dcnt";
+import {
+  Patient,
+  PatientActionRecord,
+  PatientCargaSnapshot,
+  ManagerObservationRecord,
+  ManagerObservationRevision,
+} from "@/types/dcnt";
 import { useAuth } from "@/context/auth-context";
 import { BadgePriority } from "@/components/ui/badge-priority";
 import { CardIndicator } from "@/components/ui/card-indicator";
@@ -18,6 +25,7 @@ import { formatDateBR } from "@/lib/utils/formatters";
 import { compareActionsChronological } from "@/lib/utils/returns";
 import { PriorityExplanationCard } from "@/components/patients/priority-explanation-card";
 import { PatientEvolutionHistory } from "@/components/patients/patient-evolution-history";
+import { ManagerObservationsSection } from "@/components/patients/manager-observations-section";
 import {
   User,
   Phone,
@@ -45,11 +53,11 @@ export default function PacienteDetalhePage({
   const [patients, setPatients] = useState<Patient[]>([]);
   const [realActions, setRealActions] = useState<PatientActionRecord[]>([]);
   const [realSnapshots, setRealSnapshots] = useState<PatientCargaSnapshot[]>([]);
+  const [realManagerObs, setRealManagerObs] = useState<ManagerObservationRecord[]>([]);
+  const [realManagerHist, setRealManagerHist] = useState<ManagerObservationRevision[]>([]);
 
   useEffect(() => {
     async function loadData() {
-
-
       const realData = await getAllPatientsFromStore({
         role,
         userUnitId,
@@ -59,10 +67,15 @@ export default function PacienteDetalhePage({
 
       if (resolvedParams.id) {
         try {
-          const actions = await getPatientActionsFromStore(resolvedParams.id);
+          const [actions, snapshots, managerObsData] = await Promise.all([
+            getPatientActionsFromStore(resolvedParams.id),
+            getPatientHistorySnapshotsFromStore(resolvedParams.id),
+            getPatientManagerObservationsFromStore(resolvedParams.id),
+          ]);
           setRealActions(actions);
-          const snapshots = await getPatientHistorySnapshotsFromStore(resolvedParams.id);
           setRealSnapshots(snapshots);
+          setRealManagerObs(managerObsData.observations);
+          setRealManagerHist(managerObsData.history);
         } catch (e) {
           // Tratar silenciosamente
         }
@@ -90,6 +103,23 @@ export default function PacienteDetalhePage({
 
   const allSnapshots = Array.from(snapshotMap.values()).sort((a, b) =>
     (b.dataCarga || "").localeCompare(a.dataCarga || "")
+  );
+
+  // Consolidar observações da gerência e seu histórico (do documento do paciente e subcoleção /observacoesGerente)
+  const obsFromDoc = patient.observacoesGerente || (patient.observacaoGerenteAtual ? [patient.observacaoGerenteAtual] : []);
+  const obsMap = new Map<string, ManagerObservationRecord>();
+  obsFromDoc.forEach((o) => { if (o?.id) obsMap.set(o.id, o); });
+  realManagerObs.forEach((o) => { if (o?.id) obsMap.set(o.id, o); });
+  const allManagerObservations = Array.from(obsMap.values()).sort((a, b) =>
+    (b.updatedAt || b.createdAt || "").localeCompare(a.updatedAt || a.createdAt || "")
+  );
+
+  const histFromDoc = patient.historicoObservacoesGerente || [];
+  const histMap = new Map<string, ManagerObservationRevision>();
+  histFromDoc.forEach((h) => { if (h?.id) histMap.set(h.id, h); });
+  realManagerHist.forEach((h) => { if (h?.id) histMap.set(h.id, h); });
+  const allManagerHistory = Array.from(histMap.values()).sort((a, b) =>
+    (b.dataRegistro || "").localeCompare(a.dataRegistro || "")
   );
 
   // Procurar especificamente a Visita Domiciliar mais recente para o card "Última Visita ACS"
@@ -401,6 +431,35 @@ export default function PacienteDetalhePage({
           icon={Heart}
         />
       </div>
+
+      {/* Seção de Observações da Gerência da Unidade (Editável pelo Gerente, Histórico Visível ao ACS) */}
+      <ManagerObservationsSection
+        patient={patient}
+        observations={allManagerObservations}
+        history={allManagerHistory}
+        onObservationSaved={(obs, histEntry, isEdit) => {
+          setRealManagerObs((prev) =>
+            isEdit ? prev.map((o) => (o.id === obs.id ? obs : o)) : [obs, ...prev]
+          );
+          setRealManagerHist((prev) => [histEntry, ...prev]);
+          setPatients((prev) =>
+            prev.map((p) => {
+              if (p.id !== patient.id) return p;
+              const prevObs = p.observacoesGerente || [];
+              const nextObs = isEdit
+                ? prevObs.map((o) => (o.id === obs.id ? obs : o))
+                : [obs, ...prevObs];
+              const nextHist = [histEntry, ...(p.historicoObservacoesGerente || [])];
+              return {
+                ...p,
+                observacaoGerenteAtual: obs,
+                observacoesGerente: nextObs,
+                historicoObservacoesGerente: nextHist,
+              };
+            })
+          );
+        }}
+      />
 
       {/* Seção de Motivos da Sinalização (Explicabilidade da Prioridade) */}
       <PriorityExplanationCard patient={patient} allActions={allActions} />

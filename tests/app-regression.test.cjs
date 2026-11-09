@@ -164,3 +164,61 @@ test('34-column e-SUS CSV mapping, DCNT parameterization, and deferred ACS micro
  assert.equal(relParams.pa_sistolica_alterada,130);
  } finally {await h.close();}
 });
+
+test('Manager observations: GERENTE can add and edit with history, ACS can view history but cannot edit', async () => {
+ const h=await harness();try {
+ await h.seed('pacientes/p-obs',{nome:'Maria Observada',cpf:'99988877766',unidadeId:'u1',microarea:'Microárea 01',microareaCodigo:'01',prioridade:'Alta'});
+ const patientsStore=h.load('lib/store/patients.ts');
+
+ // 1. GERENTE adds an observation (e.g. absence during ACS visit)
+ await h.as('manager');
+ const created=await patientsStore.addManagerObservationInStore('p-obs',{
+  unidadeId:'u1',
+  categoria:'Ausência em Visita',
+  texto:'ACS tentou visitar paciente em 09/11, porém estava ausente.',
+  autorId:h.ids.manager,
+  autorNome:'Gerente Unidade 1',
+  autorPerfil:'GERENTE',
+ });
+ assert.equal(created.observation.editado,false);
+ assert.equal(created.historyEntry.tipoEvento,'CRIACAO');
+
+ // 2. GERENTE edits the observation; history keeps previous and new text
+ const edited=await patientsStore.updateManagerObservationInStore('p-obs',created.observation.id,{
+  categoria:'Orientação para ACS',
+  texto:'Paciente retornou; ACS deve realizar nova visita no período da tarde.',
+  autorId:h.ids.manager,
+  autorNome:'Gerente Unidade 1',
+  autorPerfil:'GERENTE',
+ },created.observation);
+ assert.equal(edited.observation.editado,true);
+ assert.equal(edited.historyEntry.tipoEvento,'EDICAO');
+ assert.equal(edited.historyEntry.textoAnterior,'ACS tentou visitar paciente em 09/11, porém estava ausente.');
+ assert.equal(edited.historyEntry.textoNovo,'Paciente retornou; ACS deve realizar nova visita no período da tarde.');
+
+ // 3. ACS can view current observation and complete edit history
+ await h.as('acs');
+ const acsPatients=await patientsStore.getAllPatientsFromStore({role:'ACS',userUnitId:'u1',assignedMicroareaCodes:['01']});
+ assert.equal(acsPatients.length,1);
+ assert.equal(acsPatients[0].observacaoGerenteAtual.texto,'Paciente retornou; ACS deve realizar nova visita no período da tarde.');
+ assert.equal(acsPatients[0].historicoObservacoesGerente.length,2);
+
+ const acsObsHistory=await patientsStore.getPatientManagerObservationsFromStore('p-obs');
+ assert.equal(acsObsHistory.observations.length,1);
+ assert.equal(acsObsHistory.history.length,2);
+
+ // 4. ACS cannot add or edit manager observations (both client guard and SQL RPC guard)
+ await assert.rejects(patientsStore.addManagerObservationInStore('p-obs',{
+  unidadeId:'u1',
+  texto:'Tentativa indevida pelo ACS',
+  autorId:h.ids.acs,
+  autorNome:'ACS',
+  autorPerfil:'ACS',
+ }),/Acesso Negado/);
+ await assert.rejects(h.db.query('select save_manager_patient_observation($1,$2,$3)',[
+  'p-obs',
+  JSON.stringify(edited.observation),
+  JSON.stringify(edited.historyEntry),
+ ]),/Only GERENTE or ADMIN/i);
+ } finally {await h.close();}
+});

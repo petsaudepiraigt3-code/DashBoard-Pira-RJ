@@ -151,6 +151,49 @@ export interface Patient {
   timeline: PatientTimelineEvent[];
   historicoAcoes?: PatientActionRecord[];
   historicoCargas?: PatientCargaSnapshot[];
+
+  // Observações da Gerência da Unidade (com histórico de edições visível ao ACS)
+  observacaoGerenteAtual?: ManagerObservationRecord | null;
+  observacoesGerente?: ManagerObservationRecord[];
+  historicoObservacoesGerente?: ManagerObservationRevision[];
+}
+
+export type ManagerObservationCategory =
+  | "Ausência em Visita"
+  | "Orientação para ACS"
+  | "Apoio à Tomada de Decisão"
+  | "Dificuldade de Contato / Localização"
+  | "Recusa ou Impossibilidade de Atendimento"
+  | "Observação Geral";
+
+export interface ManagerObservationRevision {
+  id: string;
+  observacaoId: string;
+  patientId?: string;
+  textoAnterior: string;
+  textoNovo: string;
+  categoriaAnterior?: string;
+  categoriaNova?: string;
+  autorId: string;
+  autorNome: string;
+  autorPerfil: "GERENTE" | "ADMIN" | string;
+  dataRegistro: string; // ISO string
+  tipoEvento: "CRIACAO" | "EDICAO";
+}
+
+export interface ManagerObservationRecord {
+  id: string;
+  patientId: string;
+  unidadeId: string;
+  texto: string;
+  categoria: ManagerObservationCategory | string;
+  autorId: string;
+  autorNome: string;
+  autorPerfil: "GERENTE" | "ADMIN" | string;
+  createdAt: string; // ISO string
+  updatedAt: string; // ISO string
+  editado: boolean;
+  historicoEdicoes: ManagerObservationRevision[];
 }
 
 export type PatientActionType =
