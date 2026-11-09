@@ -96,3 +96,68 @@ export function formatDateTimeBR(
 
   return `${day}/${month}/${year} ${hours}:${minutes}`;
 }
+
+/**
+ * Formata um número de telefone brasileiro para exibição: (XX) XXXXX-XXXX ou (XX) XXXX-XXXX
+ */
+export function formatPhoneBR(phone?: string | null): string {
+  if (!phone) return "";
+  const raw = String(phone).trim();
+  if (!raw || raw === "-" || raw.toLowerCase() === "sem telefone") return "";
+
+  let digits = raw.replace(/\D/g, "").replace(/^0+/, "");
+  if (digits.startsWith("55") && (digits.length === 12 || digits.length === 13)) {
+    digits = digits.substring(2);
+  }
+
+  if (digits.length === 11) {
+    return `(${digits.substring(0, 2)}) ${digits.substring(2, 7)}-${digits.substring(7)}`;
+  }
+  if (digits.length === 10) {
+    return `(${digits.substring(0, 2)}) ${digits.substring(2, 6)}-${digits.substring(6)}`;
+  }
+  if (digits.length === 9) {
+    return `${digits.substring(0, 5)}-${digits.substring(5)}`;
+  }
+  if (digits.length === 8) {
+    return `${digits.substring(0, 4)}-${digits.substring(4)}`;
+  }
+  return raw;
+}
+
+/**
+ * Gera o link direto de conversa do WhatsApp (wa.me) a partir do campo "Telefone celular" do paciente.
+ * Retorna null caso o número esteja vazio ou inválido.
+ */
+export function formatWhatsAppUrl(phoneCell?: string | null): string | null {
+  if (!phoneCell) return null;
+  const raw = String(phoneCell).trim();
+  if (
+    !raw ||
+    raw === "-" ||
+    raw === "--" ||
+    raw.toLowerCase() === "null" ||
+    raw.toLowerCase() === "undefined" ||
+    raw.toLowerCase() === "sem telefone"
+  ) {
+    return null;
+  }
+
+  let digits = raw.replace(/\D/g, "").replace(/^0+/, "");
+  if (digits.length < 8) {
+    return null;
+  }
+
+  // Se vier apenas com 8 ou 9 dígitos (sem DDD), assume DDD 24 (Piraí/RJ)
+  if (digits.length === 8 || digits.length === 9) {
+    digits = `5524${digits}`;
+  } else if (digits.length === 10 || digits.length === 11) {
+    // Se vier com DDD (10 ou 11 dígitos), adiciona o DDI 55 (Brasil)
+    digits = `55${digits}`;
+  } else if (!digits.startsWith("55")) {
+    digits = `55${digits}`;
+  }
+
+  return `https://wa.me/${digits}`;
+}
+

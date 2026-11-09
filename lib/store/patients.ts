@@ -16,6 +16,7 @@ import {
 import { NormalizedPatientRecord } from "../esus/types";
 import { MOCK_UNIT_NAME } from "@/data/mock-data";
 import { compareActionsChronological } from "@/lib/utils/returns";
+import { normalizeUnitId } from "@/lib/store/units";
 
 export interface StorePatientDoc {
   id: string;
@@ -169,11 +170,12 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
       maSnap.forEach((mDoc) => {
         const mData = mDoc.data();
         if (mData.unidadeId && mData.codigo && mData.acsNome) {
+          const mUnit = normalizeUnitId(mData.unidadeId);
           const cleanCode = (mData.codigo || "").replace(/\D/g, "").trim();
           const paddedCode = cleanCode ? cleanCode.padStart(2, "0") : "";
-          if (cleanCode) microareaAcsMap.set(`${mData.unidadeId}_${cleanCode}`, mData.acsNome);
-          if (paddedCode) microareaAcsMap.set(`${mData.unidadeId}_${paddedCode}`, mData.acsNome);
-          microareaAcsMap.set(`${mData.unidadeId}_${mData.codigo}`, mData.acsNome);
+          if (cleanCode) microareaAcsMap.set(`${mUnit}_${cleanCode}`, mData.acsNome);
+          if (paddedCode) microareaAcsMap.set(`${mUnit}_${paddedCode}`, mData.acsNome);
+          microareaAcsMap.set(`${mUnit}_${mData.codigo}`, mData.acsNome);
         }
       });
     } catch (maErr) {
@@ -187,6 +189,10 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
         })
       : undefined;
 
+    const targetUnitId = options?.userUnitId ? normalizeUnitId(options.userUnitId) : null;
+    const isGerente = options?.role === "GERENTE";
+    const isAcs = options?.role === "ACS";
+
     const querySnapshot = await getDocs(collection(db, "pacientes"));
     querySnapshot.forEach((docSnap) => {
       const data = docSnap.data() as StorePatientDoc & {
@@ -199,16 +205,18 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
         dataUltimaConsulta?: string;
       };
 
-      const pUnitId = data.unidadeId || "USF-003";
+      const pUnitId = normalizeUnitId(data.unidadeId);
       const pMicroarea = data.microarea || "Sem microárea";
       const rawDigits =
         (pMicroarea || "").replace(/\D/g, "").trim() ||
         (data.microareaCodigo || "").replace(/\D/g, "").trim();
       const patMACode = rawDigits ? rawDigits.padStart(2, "0") : data.microareaCodigo || "";
 
-      // Filtro de Escopo em nível de consulta Store
-      if (options?.role === "ACS") {
-        if (options.userUnitId && pUnitId !== options.userUnitId) {
+      // Filtro de Escopo em nível de consulta Store:
+      // O GERENTE deve visualizar 100% dos pacientes da sua unidade, sem qualquer restrição de microárea.
+      // O ACS visualiza apenas os pacientes de suas microáreas atribuídas.
+      if (isAcs) {
+        if (targetUnitId && pUnitId !== targetUnitId) {
           return;
         }
         if (normalizedAssignedCodes !== undefined) {
@@ -220,8 +228,8 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
             return;
           }
         }
-      } else if (options?.role === "GERENTE" && options.userUnitId) {
-        if (pUnitId !== options.userUnitId) {
+      } else if (isGerente) {
+        if (targetUnitId && pUnitId !== targetUnitId) {
           return;
         }
       }
@@ -319,10 +327,23 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
       extractedPAHistory.sort((a, b) => a.date.localeCompare(b.date));
       extractedWeightHistory.sort((a, b) => a.date.localeCompare(b.date));
 
-      const resolvedPhone =
-        data.telefone ||
+      const explicitCell =
         data.telefoneCelular ||
         data.telefone_celular ||
+        (data as any)["Telefone celular"] ||
+        "";
+      const hasSplitPhoneFields =
+        "telefoneCelular" in data ||
+        "telefone_celular" in data ||
+        "telefoneResidencial" in data ||
+        "telefoneContato" in data;
+      // Para registros legados importados antes da separação explícita de telefoneCelular:
+      const legacyCellFallback = !hasSplitPhoneFields ? (data.telefone || "") : "";
+      const resolvedPhoneCell = explicitCell || legacyCellFallback || undefined;
+
+      const resolvedPhone =
+        resolvedPhoneCell ||
+        data.telefone ||
         data.telefoneContato ||
         data.telefoneResidencial ||
         data.telefoneOriginal ||
@@ -350,7 +371,7 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
         bolsaFamilia: data.beneficiarioBolsaFamilia ?? undefined,
         bolsaFamiliaValidity: data.vigenciaBolsaFamilia || undefined,
         phone: resolvedPhone,
-        phoneCell: data.telefoneCelular || data.telefone_celular || undefined,
+        phoneCell: resolvedPhoneCell,
         phoneHome: data.telefoneResidencial || undefined,
         phoneContact: data.telefoneContato || undefined,
         street: data.logradouro || undefined,
@@ -637,7 +658,7 @@ export async function addManagerObservationInStore(
   const observation: ManagerObservationRecord = {
     id: obsId,
     patientId,
-    unidadeId: params.unidadeId || "USF-003",
+    unidadeId: normalizeUnitId(params.unidadeId || "USF-003"),
     texto: cleanText,
     categoria: resolvedCategory,
     autorId: params.autorId,

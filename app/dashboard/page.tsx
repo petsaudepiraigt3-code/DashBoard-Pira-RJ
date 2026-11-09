@@ -4,9 +4,10 @@ import React, { useState, useEffect } from "react";
 import { AppLayout } from "@/components/layout/app-layout";
 import { CardIndicator } from "@/components/ui/card-indicator";
 import { BadgePriority } from "@/components/ui/badge-priority";
+import { WhatsAppButton } from "@/components/ui/whatsapp-button";
 import { BarChartSVG, DonutChartSVG } from "@/components/ui/charts";
 import { getAllPatientsFromStore } from "@/lib/store/patients";
-import { getUnitAdministrativeDiagnostics } from "@/lib/store/units";
+import { getUnitAdministrativeDiagnostics, normalizeUnitId } from "@/lib/store/units";
 import { DEFAULT_DCNT_PARAMETERS, getDcntParametersFromStore } from "@/lib/store/parameters";
 import { DcntParameters, Patient } from "@/types/dcnt";
 import { useRouter } from "next/navigation";
@@ -42,7 +43,7 @@ import { generateManagerPDFReport } from "@/lib/utils/pdf-generator";
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { role, userUnitId, userUnitNome, userProfile } = useAuth();
+  const { role, userUnitId, userUnitNome, userProfile, loading: authLoading } = useAuth();
 
   // Estado dos Pacientes (Supabase)
   const [patients, setPatients] = useState<Patient[]>([]);
@@ -54,16 +55,19 @@ export default function DashboardPage() {
   const [selectedPatientForAction, setSelectedPatientForAction] = useState<Patient | null>(null);
   const [isActionModalOpen, setIsActionModalOpen] = useState(false);
 
-  // Carregar dados reais (Supabase PostgreSQL)
+  // Carregar dados reais (Supabase PostgreSQL) garantindo que o perfil autenticado esteja carregado
   useEffect(() => {
+    if (authLoading || !userProfile) return;
+    const profile = userProfile;
     async function loadPatients() {
+      setLoadingPatients(true);
       const [realData, loadedParams] = await Promise.all([
         getAllPatientsFromStore({
-          role,
-          userUnitId,
-          assignedMicroareaCodes: userProfile?.assignedMicroareaCodes,
-          acsName: role === "ACS" ? userProfile?.name : undefined,
-          acsId: role === "ACS" ? userProfile?.uid : undefined,
+          role: profile.role,
+          userUnitId: profile.unitId || userUnitId,
+          assignedMicroareaCodes: profile.role === "ACS" ? profile.assignedMicroareaCodes : undefined,
+          acsName: profile.role === "ACS" ? profile.name : undefined,
+          acsId: profile.role === "ACS" ? profile.uid : undefined,
         }),
         getDcntParametersFromStore(),
       ]);
@@ -72,13 +76,14 @@ export default function DashboardPage() {
       setLoadingPatients(false);
     }
     loadPatients();
-  }, [role, userUnitId, userProfile]);
+  }, [authLoading, userProfile?.role, userProfile?.unitId, userProfile?.uid]);
 
   useEffect(() => {
-    if (userUnitId) {
-      getUnitAdministrativeDiagnostics(userUnitId).then(setCoverageStats).catch(() => {});
+    const activeUnit = userProfile?.unitId || userUnitId;
+    if (activeUnit) {
+      getUnitAdministrativeDiagnostics(activeUnit).then(setCoverageStats).catch(() => {});
     }
-  }, [userUnitId]);
+  }, [userProfile?.unitId, userUnitId]);
 
   // Filtros Globais
   const [filterACS, setFilterACS] = useState("Todos");
@@ -112,11 +117,13 @@ export default function DashboardPage() {
     }
   }, [role, userProfile]);
 
+  const normUnitId = userUnitId ? normalizeUnitId(userUnitId) : null;
+
   // Lista dinâmica de ACS e Microáreas da unidade para filtros do Gerente e Admin
   const availableACSList = Array.from(
     new Set(
       patients
-        .filter((p) => role !== "GERENTE" || !userUnitId || (p as any).unidadeId === userUnitId)
+        .filter((p) => role !== "GERENTE" || !normUnitId || normalizeUnitId((p as any).unidadeId) === normUnitId)
         .map((p) => p.acsName)
     )
   ).filter(Boolean).sort();
@@ -124,7 +131,7 @@ export default function DashboardPage() {
   const availableMicroareasList = Array.from(
     new Set(
       patients
-        .filter((p) => role !== "GERENTE" || !userUnitId || (p as any).unidadeId === userUnitId)
+        .filter((p) => role !== "GERENTE" || !normUnitId || normalizeUnitId((p as any).unidadeId) === normUnitId)
         .map((p) => p.microarea)
     )
   ).filter(Boolean).sort();
@@ -136,15 +143,12 @@ export default function DashboardPage() {
 
   // Filtragem dos pacientes considerando perfil e unidade
   const filteredPatients = patients.filter((pat: any) => {
-    if (role === "GERENTE" && userUnitId) {
-      const pUnitId = pat.unidadeId || "USF-003";
-      if (pUnitId !== userUnitId) return false;
+    const pUnitId = normalizeUnitId(pat.unidadeId);
+    if (role === "GERENTE" && normUnitId) {
+      if (pUnitId !== normUnitId) return false;
     }
     if (role === "ACS") {
-      if (userUnitId) {
-        const pUnitId = pat.unidadeId || "USF-003";
-        if (pUnitId !== userUnitId) return false;
-      }
+      if (normUnitId && pUnitId !== normUnitId) return false;
       const rawDigits = (pat.microarea || "").replace(/\D/g, "").trim() || (pat.microareaCodigo || "").replace(/\D/g, "").trim();
       const patMACode = rawDigits ? rawDigits.padStart(2, "0") : (pat.microareaCodigo || "");
       if (normalizedAcsCodes.length === 0 || (!normalizedAcsCodes.includes(patMACode) && !(rawDigits && normalizedAcsCodes.includes(rawDigits)))) {
@@ -584,6 +588,11 @@ export default function DashboardPage() {
                   <span className="font-bold text-sm text-zinc-900 dark:text-zinc-100">
                     {patient.name}
                   </span>
+                  <WhatsAppButton
+                    phoneCell={patient.phoneCell}
+                    patientName={patient.name}
+                    size="sm"
+                  />
                   <span className="text-xs text-zinc-500 dark:text-zinc-400">
                     ({patient.age} anos, {patient.sex})
                   </span>
@@ -677,7 +686,14 @@ export default function DashboardPage() {
                 {getSortedPendingReturns(filteredPatients).map((item) => (
                   <tr key={`${item.patient.id}_${item.actionId}`} className="hover:bg-zinc-50 dark:hover:bg-zinc-800/40">
                     <td className="px-3 py-2.5">
-                      <div className="font-bold text-zinc-900 dark:text-zinc-100">{item.patient.name}</div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-bold text-zinc-900 dark:text-zinc-100">{item.patient.name}</span>
+                        <WhatsAppButton
+                          phoneCell={item.patient.phoneCell}
+                          patientName={item.patient.name}
+                          size="sm"
+                        />
+                      </div>
                       <div className="text-[11px] text-zinc-500">{item.patient.age} anos ({item.patient.sex})</div>
                     </td>
                     <td className="px-3 py-2.5 font-semibold text-zinc-800 dark:text-zinc-200">

@@ -45,48 +45,79 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let alive = true;
 
-    // 1. Tentar recuperar sessão de teste / desenvolvimento (localStorage)
-    if (typeof window !== 'undefined') {
-      const devLogged = localStorage.getItem('dev_auth_logged');
-      if (devLogged) {
-        try {
-          const parsed = JSON.parse(devLogged) as ExtendedUserProfile;
-          if (parsed && parsed.uid && parsed.ativo) {
-            setState({
-              user: { id: parsed.uid, email: parsed.email, user_metadata: { nome: parsed.name } } as unknown as User,
-              userProfile: parsed,
-              loading: false,
-              unauthorizedMessage: null,
-            });
-            return;
-          }
-        } catch {
-          localStorage.removeItem('dev_auth_logged');
-        }
-      }
-    }
-
     async function load(user: User | null) {
       const version = ++generation.current;
       if (!user) {
         if (alive) {
-          if (typeof window !== 'undefined' && localStorage.getItem('dev_auth_logged')) return;
+          if (typeof window !== 'undefined') {
+            const devLogged = localStorage.getItem('dev_auth_logged');
+            if (devLogged) {
+              try {
+                const parsed = JSON.parse(devLogged) as ExtendedUserProfile;
+                if (parsed && parsed.uid && parsed.ativo) {
+                  setState({
+                    user: { id: parsed.uid, email: parsed.email, user_metadata: { nome: parsed.name } } as unknown as User,
+                    userProfile: parsed,
+                    loading: false,
+                    unauthorizedMessage: null,
+                  });
+                  return;
+                }
+              } catch {
+                localStorage.removeItem('dev_auth_logged');
+              }
+            }
+          }
           setState({ user: null, userProfile: null, loading: false, unauthorizedMessage: null });
         }
         return;
       }
+
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('dev_auth_logged');
+      }
+
       try {
-        const profile = await getDoc(doc(db, 'usuarios', user.id));
-        const p = profile.data();
-        if (!profile.exists() || p.ativo === false || !['ADMIN', 'GERENTE', 'ACS'].includes(p.perfil)) {
+        let profile = await getDoc(doc(db, 'usuarios', user.id));
+        let p = profile.data();
+
+        // Se o documento não estava em usuarios/<auth.uid()> ou estava sem unidadeId, reconciliar via RPC
+        if (!profile.exists() || (p.perfil !== 'ADMIN' && !p.unidadeId)) {
+          const { data: resolved } = await supabase.rpc('resolve_my_profile');
+          if (resolved && typeof resolved === 'object' && !Array.isArray(resolved)) {
+            p = resolved as Record<string, any>;
+          } else {
+            profile = await getDoc(doc(db, 'usuarios', user.id));
+            p = profile.data();
+          }
+        }
+
+        if (!p || !p.perfil || p.ativo === false || !['ADMIN', 'GERENTE', 'ACS'].includes(p.perfil)) {
           throw new Error('Seu acesso está inativo ou sem perfil. Contate o administrador.');
         }
-        if (p.perfil !== 'ADMIN' && !p.unidadeId) {
-          throw new Error('Seu usuário não possui unidade configurada.');
-        }
-        const effectiveUnitId = p.unidadeId || (p.perfil === 'ADMIN' ? 'USF-003' : null);
+
+        const rawUnitId = String(p.unidadeId || '').trim();
+        const normalizedUnitId =
+          !rawUnitId || ['usf arrozal 3', 'arrozal', 'usf-003'].includes(rawUnitId.toLowerCase())
+            ? 'USF-003'
+            : rawUnitId;
+
+        const effectiveUnitId = p.perfil === 'ADMIN' ? (rawUnitId ? normalizedUnitId : 'USF-003') : normalizedUnitId;
         const unit = effectiveUnitId ? await getDoc(doc(db, 'unidades', effectiveUnitId)) : null;
-        const areas = p.perfil === 'ACS' ? await getDocs(query(collection(db, 'microareas'), where('acsId', '==', user.id))) : null;
+        const canonicalUnitId = unit?.exists() && unit.data().codigo ? String(unit.data().codigo) : effectiveUnitId;
+
+        let assignedCodes: string[] = [];
+        if (p.perfil === 'ACS') {
+          const areas = await getDocs(query(collection(db, 'microareas'), where('acsId', '==', user.id)));
+          const codeSet = new Set<string>();
+          areas.docs.forEach((a) => {
+            if (a.data().ativo !== false && a.data().codigo) {
+              codeSet.add(String(a.data().codigo));
+            }
+          });
+          assignedCodes = Array.from(codeSet);
+        }
+
         if (alive && version === generation.current) {
           setState({
             user,
@@ -95,11 +126,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             userProfile: {
               uid: user.id,
               name: p.nome,
-              email: user.email || '',
+              email: user.email || p.email || '',
               role: p.perfil,
-              unitId: effectiveUnitId,
-              unitName: unit?.data().nome || (effectiveUnitId === 'USF-003' ? 'USF Arrozal 3' : null),
-              assignedMicroareaCodes: areas?.docs.map(a => String(a.data().codigo)) || [],
+              unitId: canonicalUnitId,
+              unitName: unit?.data().nome || (canonicalUnitId === 'USF-003' ? 'USF Arrozal 3' : canonicalUnitId),
+              assignedMicroareaCodes: assignedCodes,
               ativo: true,
             },
           });

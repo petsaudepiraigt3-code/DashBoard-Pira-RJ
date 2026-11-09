@@ -24,6 +24,7 @@ import {
   HealthUnit,
   MicroareaDoc,
   UserProfileDoc,
+  normalizeUnitId,
 } from "@/lib/store/units";
 import { useAuth } from "@/context/auth-context";
 import { useRouter } from "next/navigation";
@@ -111,10 +112,14 @@ export default function ConfiguracoesPage() {
   const [newUnitForm, setNewUnitForm] = useState({
     nome: "",
     codigo: "",
+    municipio: "Piraí",
     cnes: "",
     tipo: "USF",
-    responsavelNome: "Carlos Alberto",
+    responsavelNome: "",
     responsavelCargo: "Gerente da Unidade",
+    criarGerenteImediato: true,
+    gerenteEmail: "",
+    gerenteSenha: "Admin@123456",
   });
 
   // Modal Novo ACS
@@ -124,10 +129,16 @@ export default function ConfiguracoesPage() {
     email: "",
     telefone: "",
     unidadeId: "",
-    senhaInicial: "",
-    criarAuthImediato: false,
+    senhaInicial: "Admin@123456",
+    criarAuthImediato: true,
+    microareaIds: [] as string[],
   });
+  const [quickAcsMaInput, setQuickAcsMaInput] = useState("");
   const [isCreatingAcs, setIsCreatingAcs] = useState(false);
+
+  // Microárea rápida sob demanda no modal de associação de ACS
+  const [quickMicroareaCode, setQuickMicroareaCode] = useState("");
+  const [isAddingQuickMa, setIsAddingQuickMa] = useState(false);
 
   // Modal Novo Usuário (Servidor API Admin)
   const [showNewUserModal, setShowNewUserModal] = useState(false);
@@ -176,7 +187,7 @@ export default function ConfiguracoesPage() {
       const list = await getAllActiveUnitsFromStore();
       setUnits(list);
 
-      const targetUnitId = (role as string) === "GERENTE" && userUnitId ? userUnitId : (list.length > 0 ? list[0].id : "");
+      const targetUnitId = (role as string) === "GERENTE" && userUnitId ? normalizeUnitId(userUnitId) : (list.length > 0 ? list[0].id : "");
       setSelectedUnitId(targetUnitId);
     } catch (err) {
       // Ignorar
@@ -185,10 +196,32 @@ export default function ConfiguracoesPage() {
     }
   };
 
-  // Consultar usuários reconciliados
+  // Consultar usuários reconciliados com suporte direto a RPC gerenciado
   const fetchAllUsers = async () => {
     setLoadingUsers(true);
     try {
+      // 1. Tentar RPC list_managed_users no Supabase (funciona para GERENTE e ADMIN sem precisar de service_role)
+      const { data: rpcUsers, error: rpcErr } = await supabase.rpc("list_managed_users");
+      if (!rpcErr && Array.isArray(rpcUsers) && rpcUsers.length > 0) {
+        setAllUsers(
+          rpcUsers.map((u: any) => ({
+            uid: u.uid || u.auth_uid,
+            docId: u.uid,
+            nome: u.nome || "Usuário",
+            email: u.email,
+            perfil: u.perfil,
+            unidadeId: u.unidade_id ? normalizeUnitId(u.unidade_id) : undefined,
+            microareaIds: u.microarea_ids || [],
+            authStatus: u.auth_status || (u.auth_uid ? "AUTH_OK" : "AUTH_INEXISTENTE"),
+            authUid: u.auth_uid || u.uid,
+            authAtiva: u.ativo !== false,
+            ativo: u.ativo !== false,
+          }))
+        );
+        return;
+      }
+
+      // 2. Fallback para API do Next.js
       const idToken = (await supabase.auth.getSession()).data.session?.access_token || "";
       const res = await fetch("/api/admin/users/list-with-auth", {
         headers: { Authorization: `Bearer ${idToken}` },
@@ -273,38 +306,87 @@ export default function ConfiguracoesPage() {
 
   const [isCreatingUnit, setIsCreatingUnit] = useState(false);
 
-  // Criar Nova Área / Unidade de Saúde
+  // Criar Nova Área / Unidade de Saúde (ADMIN) com opção de criar Gerente
   const handleCreateUnit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUnitForm.nome || !newUnitForm.codigo) {
       alert("Nome e Código da Área são obrigatórios.");
       return;
     }
+    const cleanCodigo = normalizeUnitId(newUnitForm.codigo);
     setIsCreatingUnit(true);
     try {
-      // 1. Criar no Supabase
+      const cleanGerenteEmail =
+        newUnitForm.criarGerenteImediato && newUnitForm.gerenteEmail
+          ? newUnitForm.gerenteEmail.trim().toLowerCase()
+          : undefined;
+
+      // 1. Criar unidade de saúde no banco
       await createHealthUnit({
-        nome: newUnitForm.nome,
-        codigo: newUnitForm.codigo,
-        cnes: newUnitForm.cnes || undefined,
+        nome: newUnitForm.nome.trim(),
+        codigo: cleanCodigo,
+        municipio: newUnitForm.municipio?.trim() || "Piraí",
+        cnes: newUnitForm.cnes?.trim() || undefined,
         tipo: newUnitForm.tipo,
+        responsavelNome: newUnitForm.responsavelNome?.trim() || undefined,
+        responsavelCargo: newUnitForm.responsavelCargo?.trim() || "Gerente da Unidade",
+        gerenteNome: newUnitForm.responsavelNome?.trim() || undefined,
+        gerenteEmail: cleanGerenteEmail,
         ativo: true,
       });
 
-      // 2. Salvar no Supabase
-
+      // 2. Se optou por criar a conta de login do Gerente responsável imediatamente
+      if (newUnitForm.criarGerenteImediato && cleanGerenteEmail) {
+        if (!newUnitForm.gerenteSenha || newUnitForm.gerenteSenha.length < 8) {
+          alert("Aviso: A unidade foi criada, mas a senha do Gerente deve possuir no mínimo 8 caracteres.");
+        } else {
+          try {
+            await supabase.rpc("upsert_managed_user_account", {
+              p_email: cleanGerenteEmail,
+              p_password: newUnitForm.gerenteSenha,
+              p_nome: newUnitForm.responsavelNome?.trim() || `Gerente ${newUnitForm.nome.trim()}`,
+              p_perfil: "GERENTE",
+              p_unidade_id: cleanCodigo,
+              p_ativo: true,
+            });
+          } catch {
+            // Fallback para rota de API
+            const idToken = (await supabase.auth.getSession()).data.session?.access_token || "";
+            await fetch("/api/admin/users", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${idToken}`,
+              },
+              body: JSON.stringify({
+                nome: newUnitForm.responsavelNome?.trim() || `Gerente ${newUnitForm.nome.trim()}`,
+                email: cleanGerenteEmail,
+                senhaInicial: newUnitForm.gerenteSenha,
+                perfil: "GERENTE",
+                unidadeId: cleanCodigo,
+                ativo: true,
+              }),
+            }).catch(() => {});
+          }
+        }
+      }
 
       await fetchUnits();
+      await fetchAllUsers();
       setShowNewUnitModal(false);
       setNewUnitForm({
         nome: "",
         codigo: "",
+        municipio: "Piraí",
         cnes: "",
         tipo: "USF",
-        responsavelNome: "Carlos Alberto",
+        responsavelNome: "",
         responsavelCargo: "Gerente da Unidade",
+        criarGerenteImediato: true,
+        gerenteEmail: "",
+        gerenteSenha: "Admin@123456",
       });
-      alert("Área / Unidade cadastrada com sucesso!");
+      alert(`Unidade de Saúde ${newUnitForm.nome.trim()} (${cleanCodigo}) cadastrada com sucesso!`);
     } catch (err: any) {
       alert(`Erro ao cadastrar área: ${err.message}`);
     } finally {
@@ -365,7 +447,7 @@ export default function ConfiguracoesPage() {
     }
   }, [selectedUnitId, allUsers]);
 
-  // Criar Novo ACS na Unidade
+  // Criar Novo ACS na Unidade (com Login imediato e Atribuição de Microáreas na mesma tela)
   const handleCreateAcs = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newAcsForm.nome || !newAcsForm.email) {
@@ -374,7 +456,7 @@ export default function ConfiguracoesPage() {
     }
 
     const cleanEmail = newAcsForm.email.trim().toLowerCase();
-    const activeUnit = (role as string) === "GERENTE" ? (userUnitId || selectedUnitId) : (newAcsForm.unidadeId || selectedUnitId);
+    const activeUnit = normalizeUnitId((role as string) === "GERENTE" ? (userUnitId || selectedUnitId) : (newAcsForm.unidadeId || selectedUnitId));
 
     if (!activeUnit) {
       alert("Por favor, selecione uma Unidade de Saúde.");
@@ -384,33 +466,57 @@ export default function ConfiguracoesPage() {
     setIsCreatingAcs(true);
 
     try {
+      let createdUid = "";
+      const selectedMAs = [...newAcsForm.microareaIds];
+
       if (newAcsForm.criarAuthImediato) {
         if (!newAcsForm.senhaInicial || newAcsForm.senhaInicial.length < 8) {
           alert("A senha inicial deve possuir no mínimo 8 caracteres.");
           setIsCreatingAcs(false);
           return;
         }
-        const idToken = (await supabase.auth.getSession()).data.session?.access_token || "";
-        const res = await fetch("/api/admin/users", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${idToken}`,
-          },
-          body: JSON.stringify({
-            nome: newAcsForm.nome.trim(),
-            email: cleanEmail,
-            senhaInicial: newAcsForm.senhaInicial,
-            perfil: "ACS",
-            unidadeId: activeUnit,
-            ativo: true,
-          }),
-        });
 
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Erro ao criar conta de ACS.");
+        try {
+          const { data: rpcData, error: rpcErr } = await supabase.rpc("upsert_managed_user_account", {
+            p_email: cleanEmail,
+            p_password: newAcsForm.senhaInicial,
+            p_nome: newAcsForm.nome.trim(),
+            p_perfil: "ACS",
+            p_unidade_id: activeUnit,
+            p_telefone: newAcsForm.telefone || null,
+            p_microarea_ids: selectedMAs.length > 0 ? selectedMAs : null,
+            p_ativo: true,
+          });
+          if (!rpcErr && rpcData?.success) {
+            createdUid = rpcData.uid;
+          } else if (rpcErr) {
+            throw rpcErr;
+          }
+        } catch {
+          // Fallback para rota de API
+          const idToken = (await supabase.auth.getSession()).data.session?.access_token || "";
+          const res = await fetch("/api/admin/users", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${idToken}`,
+            },
+            body: JSON.stringify({
+              nome: newAcsForm.nome.trim(),
+              email: cleanEmail,
+              senhaInicial: newAcsForm.senhaInicial,
+              perfil: "ACS",
+              unidadeId: activeUnit,
+              ativo: true,
+            }),
+          });
+
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "Erro ao criar conta de ACS.");
+          createdUid = data.user?.id || "";
+        }
       } else {
-        await createAcsUser({
+        createdUid = await createAcsUser({
           nome: newAcsForm.nome.trim(),
           email: cleanEmail,
           telefone: newAcsForm.telefone,
@@ -418,15 +524,54 @@ export default function ConfiguracoesPage() {
         });
       }
 
+      // Atribuir as microáreas selecionadas ao ACS criado
+      if (selectedMAs.length > 0) {
+        for (const maId of selectedMAs) {
+          try {
+            await assignAcsToMicroarea(maId, createdUid, newAcsForm.nome.trim(), userProfile?.uid || "gerente");
+          } catch {
+            // Ignorar falha pontual
+          }
+        }
+      }
+
       setShowNewAcsModal(false);
-      setNewAcsForm({ nome: "", email: "", telefone: "", unidadeId: "", senhaInicial: "", criarAuthImediato: false });
+      setNewAcsForm({
+        nome: "",
+        email: "",
+        telefone: "",
+        unidadeId: "",
+        senhaInicial: "Admin@123456",
+        criarAuthImediato: true,
+        microareaIds: [],
+      });
+      setQuickAcsMaInput("");
       await fetchAllUsers();
       await fetchUnitData(activeUnit);
-      alert("ACS cadastrado com sucesso. Agora você pode associar as microáreas de responsabilidade.");
+      alert(`ACS ${newAcsForm.nome.trim()} cadastrado com sucesso com ${selectedMAs.length} microárea(s) vinculada(s)!`);
     } catch (err: any) {
       alert(`Erro ao criar ACS: ${err.message}`);
     } finally {
       setIsCreatingAcs(false);
+    }
+  };
+
+  // Cadastrar nova microárea sob demanda para o ACS alvo no modal de associação
+  const handleQuickAddMicroareaToAcs = async () => {
+    if (!assignAcsTarget || !quickMicroareaCode.trim()) return;
+    const cleanCode = quickMicroareaCode.trim();
+    setIsAddingQuickMa(true);
+    try {
+      const { microareaId } = await ensureUnitMicroareaInStore(selectedUnitId, cleanCode);
+      const targetUid = assignAcsTarget.authUid || assignAcsTarget.uid;
+      await assignAcsToMicroarea(microareaId, targetUid, assignAcsTarget.nome, userProfile?.uid || "gerente");
+      setSelectedMicroareaIdsForAcs((prev) => (prev.includes(microareaId) ? prev : [...prev, microareaId]));
+      setQuickMicroareaCode("");
+      await fetchUnitData(selectedUnitId);
+    } catch (err: any) {
+      alert(`Erro ao adicionar e atribuir microárea: ${err.message}`);
+    } finally {
+      setIsAddingQuickMa(false);
     }
   };
 
@@ -1032,9 +1177,11 @@ export default function ConfiguracoesPage() {
                   email: "",
                   telefone: "",
                   unidadeId: selectedUnitId,
-                  senhaInicial: "",
-                  criarAuthImediato: false,
+                  senhaInicial: "Admin@123456",
+                  criarAuthImediato: true,
+                  microareaIds: [],
                 });
+                setQuickAcsMaInput("");
                 setShowNewAcsModal(true);
               }}
               className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3.5 py-2 text-xs font-bold text-white shadow-2xs hover:bg-blue-700 cursor-pointer"
@@ -1198,8 +1345,9 @@ export default function ConfiguracoesPage() {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {units.map((u) => {
-              const respNome = (u as any).responsavelNome || (u.codigo === "USF-003" ? "Carlos Alberto" : "Dra. Márcia Regina");
-              const respCargo = (u as any).responsavelCargo || (u.codigo === "USF-003" ? "Gerente da Unidade" : "Responsável Técnico / Coordenação");
+              const respNome = (u as any).responsavelNome || (u as any).gerenteNome || (u.codigo === "USF-003" ? "Carlos Alberto" : "Responsável a definir");
+              const respCargo = (u as any).responsavelCargo || ((u as any).gerenteNome ? "Gerente da Unidade" : "Coordenação");
+              const respEmail = (u as any).gerenteEmail || "";
               const isGerente = respCargo.toLowerCase().includes("gerente");
 
               return (
@@ -1217,7 +1365,7 @@ export default function ConfiguracoesPage() {
                         {u.nome}
                       </h3>
                       <span className="text-xs font-mono text-zinc-500">
-                        Código: {u.codigo} | CNES: {u.cnes || "Não informado"} | Tipo: {u.tipo}
+                        Código: {u.codigo} | Município: {u.municipio || "Piraí"} | Tipo: {u.tipo} | CNES: {u.cnes || "Não informado"}
                       </span>
                     </div>
                     <span className="rounded bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
@@ -1227,9 +1375,15 @@ export default function ConfiguracoesPage() {
 
                   <div className="border-t border-zinc-100 dark:border-zinc-800 pt-3 space-y-1.5 text-xs">
                     <div className="flex items-center justify-between">
-                      <span className="text-zinc-500 font-medium">Responsável pela Área:</span>
+                      <span className="text-zinc-500 font-medium">Gerente da Unidade:</span>
                       <span className="font-extrabold text-zinc-900 dark:text-zinc-100">{respNome}</span>
                     </div>
+                    {respEmail && (
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500 font-medium">Login do Gerente:</span>
+                        <span className="font-mono text-blue-600 dark:text-blue-400">{respEmail}</span>
+                      </div>
+                    )}
                     <div className="flex items-center justify-between">
                       <span className="text-zinc-500 font-medium">Cargo / Função:</span>
                       <span className={`rounded px-2 py-0.5 text-[10px] font-bold ${
@@ -1912,74 +2066,78 @@ export default function ConfiguracoesPage() {
 
       {/* MODAL: NOVO ACS */}
       {showNewAcsModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
-          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 space-y-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 space-y-4 my-8">
             <h3 className="text-base font-bold text-zinc-900 dark:text-zinc-100">
               Cadastrar Novo Agente Comunitário de Saúde (ACS)
             </h3>
 
             <form onSubmit={handleCreateAcs} className="space-y-3 text-xs font-medium">
-              <div>
-                <label className="block font-semibold mb-1">Nome Completo *:</label>
-                <input
-                  type="text"
-                  placeholder="Ex: Maria da Silva"
-                  value={newAcsForm.nome}
-                  onChange={(e) => setNewAcsForm({ ...newAcsForm, nome: e.target.value })}
-                  className="w-full rounded-lg border p-2 dark:bg-zinc-800"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="block font-semibold mb-1">E-mail corporativo *:</label>
-                <input
-                  type="email"
-                  placeholder="maria.silva@usf.gov.br"
-                  value={newAcsForm.email}
-                  onChange={(e) => setNewAcsForm({ ...newAcsForm, email: e.target.value })}
-                  className="w-full rounded-lg border p-2 dark:bg-zinc-800"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="block font-semibold mb-1">Telefone (Opcional):</label>
-                <input
-                  type="text"
-                  placeholder="(24) 99999-8888"
-                  value={newAcsForm.telefone}
-                  onChange={(e) => setNewAcsForm({ ...newAcsForm, telefone: e.target.value })}
-                  className="w-full rounded-lg border p-2 dark:bg-zinc-800"
-                />
-              </div>
-
-              <div>
-                <label className="block font-semibold mb-1">Unidade de Saúde:</label>
-                {(role as string) === "GERENTE" ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold mb-1">Nome Completo *:</label>
                   <input
                     type="text"
-                    value={selectedUnitObj?.nome || "USF Arrozal 3"}
-                    disabled
-                    className="w-full rounded-lg border p-2 bg-zinc-100 dark:bg-zinc-800 font-bold"
-                  />
-                ) : (
-                  <select
-                    value={newAcsForm.unidadeId || selectedUnitId}
-                    onChange={(e) => setNewAcsForm({ ...newAcsForm, unidadeId: e.target.value })}
+                    placeholder="Ex: Maria da Silva"
+                    value={newAcsForm.nome}
+                    onChange={(e) => setNewAcsForm({ ...newAcsForm, nome: e.target.value })}
                     className="w-full rounded-lg border p-2 dark:bg-zinc-800"
                     required
-                  >
-                    {units.map((u) => (
-                      <option key={u.id} value={u.id}>
-                        {u.nome} ({u.codigo})
-                      </option>
-                    ))}
-                  </select>
-                )}
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-semibold mb-1">E-mail de Login *:</label>
+                  <input
+                    type="email"
+                    placeholder="maria.silva@usf.gov.br"
+                    value={newAcsForm.email}
+                    onChange={(e) => setNewAcsForm({ ...newAcsForm, email: e.target.value })}
+                    className="w-full rounded-lg border p-2 dark:bg-zinc-800"
+                    required
+                  />
+                </div>
               </div>
 
-              <div className="pt-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold mb-1">Telefone (Opcional):</label>
+                  <input
+                    type="text"
+                    placeholder="(24) 99999-8888"
+                    value={newAcsForm.telefone}
+                    onChange={(e) => setNewAcsForm({ ...newAcsForm, telefone: e.target.value })}
+                    className="w-full rounded-lg border p-2 dark:bg-zinc-800"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-semibold mb-1">Unidade de Saúde:</label>
+                  {(role as string) === "GERENTE" ? (
+                    <input
+                      type="text"
+                      value={selectedUnitObj?.nome || "USF Arrozal 3"}
+                      disabled
+                      className="w-full rounded-lg border p-2 bg-zinc-100 dark:bg-zinc-800 font-bold"
+                    />
+                  ) : (
+                    <select
+                      value={newAcsForm.unidadeId || selectedUnitId}
+                      onChange={(e) => setNewAcsForm({ ...newAcsForm, unidadeId: e.target.value })}
+                      className="w-full rounded-lg border p-2 dark:bg-zinc-800 cursor-pointer"
+                      required
+                    >
+                      {units.map((u) => (
+                        <option key={u.id} value={u.id}>
+                          {u.nome} ({u.codigo})
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              </div>
+
+              <div className="pt-2 border-t border-zinc-200 dark:border-zinc-800">
                 <label className="flex items-center gap-2 font-semibold cursor-pointer">
                   <input
                     type="checkbox"
@@ -1987,13 +2145,13 @@ export default function ConfiguracoesPage() {
                     onChange={(e) => setNewAcsForm({ ...newAcsForm, criarAuthImediato: e.target.checked })}
                     className="rounded border-zinc-300"
                   />
-                  <span>Criar conta de login no Supabase Auth imediatamente</span>
+                  <span>Criar conta de login com senha de acesso imediatamente</span>
                 </label>
               </div>
 
               {newAcsForm.criarAuthImediato && (
                 <div>
-                  <label className="block font-semibold mb-1">Senha Inicial * (mínimo 8 caracteres):</label>
+                  <label className="block font-semibold mb-1">Senha Inicial de Acesso * (mínimo 8 dígitos):</label>
                   <input
                     type="password"
                     placeholder="••••••••"
@@ -2004,6 +2162,102 @@ export default function ConfiguracoesPage() {
                   />
                 </div>
               )}
+
+              {/* Seção: Microáreas de Responsabilidade deste ACS */}
+              <div className="pt-2 border-t border-zinc-200 dark:border-zinc-800 space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-bold text-zinc-900 dark:text-zinc-100">
+                    Atribuir Microáreas para este ACS:
+                  </label>
+                  <span className="text-[11px] text-zinc-500 font-semibold">
+                    {newAcsForm.microareaIds.length} microárea(s) marcada(s)
+                  </span>
+                </div>
+                <p className="text-[11px] text-zinc-500">
+                  O Gerente pode selecionar uma ou mais microáreas já cadastradas ou digitar o código abaixo para criar e incluir no mesmo instante:
+                </p>
+
+                {/* Adição rápida de nova microárea dentro do formulário de criação de ACS */}
+                <div className="flex gap-2 items-center">
+                  <input
+                    type="text"
+                    placeholder="Nova microárea (ex: 57)"
+                    value={quickAcsMaInput}
+                    onChange={(e) => setQuickAcsMaInput(e.target.value)}
+                    className="flex-1 rounded-lg border p-1.5 text-xs bg-zinc-50 dark:bg-zinc-800"
+                  />
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!quickAcsMaInput.trim()) return;
+                      const activeUnit = normalizeUnitId(
+                        (role as string) === "GERENTE" ? (userUnitId || selectedUnitId) : (newAcsForm.unidadeId || selectedUnitId)
+                      );
+                      try {
+                        const { microareaId } = await ensureUnitMicroareaInStore(activeUnit, quickAcsMaInput.trim());
+                        await fetchUnitData(activeUnit);
+                        setNewAcsForm((prev) => ({
+                          ...prev,
+                          microareaIds: prev.microareaIds.includes(microareaId) ? prev.microareaIds : [...prev.microareaIds, microareaId],
+                        }));
+                        setQuickAcsMaInput("");
+                      } catch (err: any) {
+                        alert(`Erro ao adicionar microárea: ${err.message}`);
+                      }
+                    }}
+                    className="flex items-center gap-1 rounded-lg bg-zinc-200 hover:bg-zinc-300 dark:bg-zinc-700 dark:hover:bg-zinc-600 px-3 py-1.5 text-xs font-bold text-zinc-800 dark:text-zinc-200 cursor-pointer"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    <span>+ Adicionar</span>
+                  </button>
+                </div>
+
+                {/* Lista de Microáreas com Checkbox */}
+                <div className="max-h-36 overflow-y-auto space-y-1.5 border border-zinc-200 dark:border-zinc-800 rounded-xl p-2.5 bg-zinc-50/50 dark:bg-zinc-900/50">
+                  {microareas.filter((m) => m.tipoMicroarea === "NORMAL").length === 0 ? (
+                    <p className="text-[11px] text-zinc-400 p-2 text-center">
+                      Nenhuma microárea cadastrada nesta unidade. Use o campo acima para criar.
+                    </p>
+                  ) : (
+                    microareas
+                      .filter((m) => m.tipoMicroarea === "NORMAL")
+                      .map((m) => {
+                        const isChecked = newAcsForm.microareaIds.includes(m.id) || newAcsForm.microareaIds.includes(m.codigo);
+                        return (
+                          <label
+                            key={m.id}
+                            className={`flex items-center justify-between p-2 rounded-lg border text-xs cursor-pointer transition-all ${
+                              isChecked
+                                ? "border-blue-500 bg-blue-50/60 dark:bg-blue-950/40"
+                                : "border-zinc-200 dark:border-zinc-800 hover:bg-white dark:hover:bg-zinc-800"
+                            }`}
+                          >
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={(e) => {
+                                  const checked = e.target.checked;
+                                  setNewAcsForm((prev) => ({
+                                    ...prev,
+                                    microareaIds: checked
+                                      ? [...prev.microareaIds, m.id]
+                                      : prev.microareaIds.filter((id) => id !== m.id && id !== m.codigo),
+                                  }));
+                                }}
+                                className="rounded border-zinc-300"
+                              />
+                              <span className="font-extrabold text-zinc-900 dark:text-zinc-100">{m.nome}</span>
+                            </div>
+                            <span className="text-[10px] text-zinc-500">
+                              {m.acsNome ? `Atual: ${m.acsNome}` : "Livre"}
+                            </span>
+                          </label>
+                        );
+                      })
+                  )}
+                </div>
+              </div>
 
               <div className="flex justify-end gap-2 pt-2">
                 <button
@@ -2020,7 +2274,7 @@ export default function ConfiguracoesPage() {
                   className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-1.5 text-white font-bold cursor-pointer disabled:opacity-50"
                 >
                   {isCreatingAcs && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                  <span>Salvar ACS</span>
+                  <span>Salvar e Atribuir ACS</span>
                 </button>
               </div>
             </form>
@@ -2036,8 +2290,33 @@ export default function ConfiguracoesPage() {
               Associar Microáreas - {assignAcsTarget.nome}
             </h3>
             <p className="text-xs text-zinc-500">
-              Selecione as microáreas da {selectedUnitObj?.nome || "USF Arrozal 3"} sob a responsabilidade deste ACS.
+              Selecione as microáreas da {selectedUnitObj?.nome || "USF Arrozal 3"} sob a responsabilidade deste ACS ou crie novas sob demanda.
             </p>
+
+            {/* Adição rápida de microárea sob demanda para este ACS */}
+            <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-800/40 p-3 space-y-2">
+              <label className="block text-xs font-bold text-zinc-800 dark:text-zinc-200">
+                Cadastrar nova microárea sob demanda para {assignAcsTarget.nome}:
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="Código da microárea (ex: 57)"
+                  value={quickMicroareaCode}
+                  onChange={(e) => setQuickMicroareaCode(e.target.value)}
+                  className="flex-1 rounded-lg border p-2 text-xs bg-white dark:bg-zinc-900 border-zinc-300 dark:border-zinc-700"
+                />
+                <button
+                  type="button"
+                  disabled={isAddingQuickMa || !quickMicroareaCode.trim()}
+                  onClick={handleQuickAddMicroareaToAcs}
+                  className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-xs font-bold text-white hover:bg-blue-700 disabled:opacity-50 cursor-pointer"
+                >
+                  {isAddingQuickMa ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+                  <span>+ Criar e Atribuir</span>
+                </button>
+              </div>
+            </div>
 
             <div className="max-h-60 overflow-y-auto space-y-2 border border-zinc-200 dark:border-zinc-800 rounded-xl p-3">
               {microareas
@@ -2343,86 +2622,139 @@ export default function ConfiguracoesPage() {
 
       {/* MODAL: NOVA ÁREA (UNIDADE DE SAÚDE) */}
       {showNewUnitModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
-          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 space-y-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 space-y-4 my-8">
             <h3 className="text-base font-bold text-zinc-900 dark:text-zinc-100">
-              Cadastrar Nova Área (Unidade de Saúde)
+              Cadastrar Nova Área / Unidade de Saúde (Piraí)
             </h3>
 
             <form onSubmit={handleCreateUnit} className="space-y-3 text-xs font-medium">
-              <div>
-                <label className="block font-semibold mb-1">Nome da Área / Unidade *:</label>
-                <input
-                  type="text"
-                  placeholder="Ex: USF Arrozal 3"
-                  value={newUnitForm.nome}
-                  onChange={(e) => setNewUnitForm({ ...newUnitForm, nome: e.target.value })}
-                  className="w-full rounded-lg border p-2 dark:bg-zinc-800"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="block font-semibold mb-1">Código da Área *:</label>
-                <input
-                  type="text"
-                  placeholder="Ex: USF-003"
-                  value={newUnitForm.codigo}
-                  onChange={(e) => setNewUnitForm({ ...newUnitForm, codigo: e.target.value })}
-                  className="w-full rounded-lg border p-2 dark:bg-zinc-800"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="block font-semibold mb-1">Responsável pela Área *:</label>
-                <input
-                  type="text"
-                  placeholder="Ex: Carlos Alberto"
-                  value={newUnitForm.responsavelNome}
-                  onChange={(e) => setNewUnitForm({ ...newUnitForm, responsavelNome: e.target.value })}
-                  className="w-full rounded-lg border p-2 dark:bg-zinc-800"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="block font-semibold mb-1">Cargo / Função do Responsável:</label>
-                <input
-                  type="text"
-                  placeholder="Ex: Gerente da Unidade, Coordenador, etc."
-                  value={newUnitForm.responsavelCargo}
-                  onChange={(e) => setNewUnitForm({ ...newUnitForm, responsavelCargo: e.target.value })}
-                  className="w-full rounded-lg border p-2 dark:bg-zinc-800"
-                />
-                <span className="text-[10px] text-zinc-500 mt-0.5 block">
-                  Padrão: Gerente da Unidade (ou informe outro cargo/função se não for gerente).
-                </span>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-semibold mb-1">CNES:</label>
+                  <label className="block font-semibold mb-1">Nome da Área / Unidade *:</label>
                   <input
                     type="text"
-                    placeholder="Ex: 1234567"
-                    value={newUnitForm.cnes}
-                    onChange={(e) => setNewUnitForm({ ...newUnitForm, cnes: e.target.value })}
+                    placeholder="Ex: USF Piraí Centro"
+                    value={newUnitForm.nome}
+                    onChange={(e) => setNewUnitForm({ ...newUnitForm, nome: e.target.value })}
+                    className="w-full rounded-lg border p-2 dark:bg-zinc-800"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-semibold mb-1">Código da Área *:</label>
+                  <input
+                    type="text"
+                    placeholder="Ex: USF-001"
+                    value={newUnitForm.codigo}
+                    onChange={(e) => setNewUnitForm({ ...newUnitForm, codigo: e.target.value })}
+                    className="w-full rounded-lg border p-2 dark:bg-zinc-800 font-mono"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold mb-1">Município:</label>
+                  <input
+                    type="text"
+                    placeholder="Ex: Piraí"
+                    value={newUnitForm.municipio}
+                    onChange={(e) => setNewUnitForm({ ...newUnitForm, municipio: e.target.value })}
                     className="w-full rounded-lg border p-2 dark:bg-zinc-800"
                   />
                 </div>
-                <div>
-                  <label className="block font-semibold mb-1">Tipo:</label>
-                  <select
-                    value={newUnitForm.tipo}
-                    onChange={(e) => setNewUnitForm({ ...newUnitForm, tipo: e.target.value })}
-                    className="w-full rounded-lg border p-2 dark:bg-zinc-800 cursor-pointer"
-                  >
-                    <option value="USF">USF</option>
-                    <option value="UBS">UBS</option>
-                    <option value="UBDS">UBDS</option>
-                  </select>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block font-semibold mb-1">CNES:</label>
+                    <input
+                      type="text"
+                      placeholder="Ex: 1234567"
+                      value={newUnitForm.cnes}
+                      onChange={(e) => setNewUnitForm({ ...newUnitForm, cnes: e.target.value })}
+                      className="w-full rounded-lg border p-2 dark:bg-zinc-800"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Tipo:</label>
+                    <select
+                      value={newUnitForm.tipo}
+                      onChange={(e) => setNewUnitForm({ ...newUnitForm, tipo: e.target.value })}
+                      className="w-full rounded-lg border p-2 dark:bg-zinc-800 cursor-pointer"
+                    >
+                      <option value="USF">USF</option>
+                      <option value="UBS">UBS</option>
+                      <option value="UBDS">UBDS</option>
+                    </select>
+                  </div>
                 </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold mb-1">Responsável / Gerente da Unidade *:</label>
+                  <input
+                    type="text"
+                    placeholder="Ex: Dr. Marcelo Rocha"
+                    value={newUnitForm.responsavelNome}
+                    onChange={(e) => setNewUnitForm({ ...newUnitForm, responsavelNome: e.target.value })}
+                    className="w-full rounded-lg border p-2 dark:bg-zinc-800"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-semibold mb-1">Cargo / Função:</label>
+                  <input
+                    type="text"
+                    placeholder="Ex: Gerente da Unidade"
+                    value={newUnitForm.responsavelCargo}
+                    onChange={(e) => setNewUnitForm({ ...newUnitForm, responsavelCargo: e.target.value })}
+                    className="w-full rounded-lg border p-2 dark:bg-zinc-800"
+                  />
+                </div>
+              </div>
+
+              <div className="pt-2 border-t border-zinc-200 dark:border-zinc-800 space-y-2">
+                <label className="flex items-center gap-2 font-semibold cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={newUnitForm.criarGerenteImediato}
+                    onChange={(e) => setNewUnitForm({ ...newUnitForm, criarGerenteImediato: e.target.checked })}
+                    className="rounded border-zinc-300"
+                  />
+                  <span>Criar imediatamente conta de login no sistema para o Gerente desta Unidade</span>
+                </label>
+
+                {newUnitForm.criarGerenteImediato && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-blue-50/50 dark:bg-blue-950/30 p-3 rounded-xl border border-blue-200 dark:border-blue-900">
+                    <div>
+                      <label className="block font-semibold mb-1 text-[11px]">E-mail de Login do Gerente *:</label>
+                      <input
+                        type="email"
+                        placeholder="gerente@dcntsaude.gov.br"
+                        value={newUnitForm.gerenteEmail}
+                        onChange={(e) => setNewUnitForm({ ...newUnitForm, gerenteEmail: e.target.value })}
+                        className="w-full rounded-lg border p-2 bg-white dark:bg-zinc-800 text-xs"
+                        required={newUnitForm.criarGerenteImediato}
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-semibold mb-1 text-[11px]">Senha Inicial do Gerente * (mín. 8 dígitos):</label>
+                      <input
+                        type="password"
+                        placeholder="••••••••"
+                        value={newUnitForm.gerenteSenha}
+                        onChange={(e) => setNewUnitForm({ ...newUnitForm, gerenteSenha: e.target.value })}
+                        className="w-full rounded-lg border p-2 bg-white dark:bg-zinc-800 text-xs"
+                        required={newUnitForm.criarGerenteImediato}
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="flex justify-end gap-2 pt-2">
@@ -2440,7 +2772,7 @@ export default function ConfiguracoesPage() {
                   className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-1.5 text-white font-bold cursor-pointer disabled:opacity-50"
                 >
                   {isCreatingUnit && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                  <span>Salvar Área</span>
+                  <span>Salvar Área e Gerente</span>
                 </button>
               </div>
             </form>

@@ -1136,21 +1136,66 @@ end $$;
 -- 4. RLS POLICIES & TRANSACTIONAL RPC FUNCTIONS
 -- ==============================================================================
 
+create or replace function public.normalize_unit_id(p_unit text) returns text
+language sql stable security definer set search_path = public
+as $$
+  select coalesce(
+    (
+      select coalesce(nullif(trim(d.data->>'codigo'), ''), split_part(d.path, '/', 2))
+      from public.app_documents d
+      where d.collection = 'unidades'
+        and trim(coalesce(p_unit, '')) <> ''
+        and (
+          split_part(d.path, '/', 2) = trim(p_unit)
+          or lower(trim(coalesce(d.data->>'codigo', ''))) = lower(trim(p_unit))
+          or lower(trim(coalesce(d.data->>'nome', ''))) = lower(trim(p_unit))
+          or lower(trim(coalesce(d.data->>'nomeNormalizado', ''))) = lower(trim(p_unit))
+        )
+      order by (split_part(d.path, '/', 2) = trim(p_unit)) desc
+      limit 1
+    ),
+    case
+      when lower(trim(coalesce(p_unit, ''))) in ('', 'usf arrozal 3', 'arrozal', 'usf-003') then 'USF-003'
+      else trim(p_unit)
+    end
+  )
+$$;
+
 create or replace function public.current_profile() returns jsonb
 language sql stable security definer set search_path = public
-as $$ select data from public.app_documents where path = 'usuarios/' || auth.uid()::text and data->>'ativo' = 'true' $$;
+as $$
+  select data
+  from public.app_documents
+  where collection = 'usuarios'
+    and coalesce(data->>'ativo', 'true') <> 'false'
+    and (
+      path = 'usuarios/' || auth.uid()::text
+      or data->>'uid' = auth.uid()::text
+      or data->>'authUid' = auth.uid()::text
+      or (
+        coalesce(nullif(current_setting('request.jwt.claim.email', true), ''), '') <> ''
+        and lower(trim(coalesce(data->>'email', ''))) = lower(trim(current_setting('request.jwt.claim.email', true)))
+      )
+    )
+  order by (path = 'usuarios/' || auth.uid()::text) desc, updated_at desc
+  limit 1
+$$;
 
 create or replace function public.patient_scope(p jsonb) returns boolean
 language sql stable security definer set search_path = public
 as $$
  select coalesce(
    public.current_profile()->>'perfil' = 'ADMIN' or (
-    p->>'unidadeId' = public.current_profile()->>'unidadeId' and (
+    public.normalize_unit_id(p->>'unidadeId') = public.normalize_unit_id(public.current_profile()->>'unidadeId') and (
       public.current_profile()->>'perfil' = 'GERENTE' or (
         public.current_profile()->>'perfil' = 'ACS' and exists (
           select 1 from public.app_documents m where m.collection = 'microareas'
-          and m.data->>'unidadeId' = p->>'unidadeId' and m.data->>'acsId' = auth.uid()::text
-          and m.data->>'ativo' = 'true'
+          and public.normalize_unit_id(m.data->>'unidadeId') = public.normalize_unit_id(p->>'unidadeId')
+          and (
+            m.data->>'acsId' = auth.uid()::text
+            or m.data->>'acsId' = public.current_profile()->>'uid'
+          )
+          and coalesce(m.data->>'ativo', 'true') <> 'false'
           and (
             m.data->>'codigo' = coalesce(p->>'microareaCodigo', regexp_replace(p->>'microarea', '\D', '', 'g'))
             or lpad(regexp_replace(coalesce(m.data->>'codigo', ''), '\D', '', 'g'), 2, '0') =
@@ -1170,22 +1215,32 @@ begin
  if actor is null then return false; end if;
  if actor->>'perfil' = 'ADMIN' then return true; end if;
  if kind = 'usuarios' then
-   return (not writing and p_path = 'usuarios/' || auth.uid()::text) or
-    (actor->>'perfil' = 'GERENTE' and p_data->>'perfil' = 'ACS' and p_data->>'unidadeId' = actor->>'unidadeId');
+   return (
+     not writing and (
+       p_path = 'usuarios/' || auth.uid()::text
+       or p_data->>'uid' = auth.uid()::text
+       or p_data->>'authUid' = auth.uid()::text
+       or (actor->>'perfil' = 'GERENTE' and public.normalize_unit_id(p_data->>'unidadeId') = public.normalize_unit_id(actor->>'unidadeId'))
+     )
+   ) or (
+     actor->>'perfil' = 'GERENTE'
+     and p_data->>'perfil' = 'ACS'
+     and public.normalize_unit_id(p_data->>'unidadeId') = public.normalize_unit_id(actor->>'unidadeId')
+   );
  elsif kind = 'unidades' then
-   return not writing and p_path = 'unidades/' || (actor->>'unidadeId');
+   return not writing and (
+     p_path = 'unidades/' || (actor->>'unidadeId')
+     or public.normalize_unit_id(coalesce(p_data->>'codigo', split_part(p_path, '/', 2))) = public.normalize_unit_id(actor->>'unidadeId')
+   );
  elsif kind = 'microareas' then
-   return p_data->>'unidadeId' = actor->>'unidadeId' and
-     (actor->>'perfil' = 'GERENTE' or (not writing and p_data->>'acsId' = auth.uid()::text));
+   return public.normalize_unit_id(p_data->>'unidadeId') = public.normalize_unit_id(actor->>'unidadeId') and
+     (actor->>'perfil' = 'GERENTE' or not writing);
  elsif kind = 'pacientes' then
    if array_length(string_to_array(p_path, '/'), 1) = 2 then return public.patient_scope(p_data); end if;
    select data into patient from public.app_documents where path = 'pacientes/' || split_part(p_path, '/', 2);
-   return public.patient_scope(patient) and (not writing or actor->>'perfil' = 'GERENTE' or split_part(p_path, '/', 3) = 'acoes');
- elsif kind = 'mensagens_whatsapp' then
-   select data into patient from public.app_documents where path = 'pacientes/' || (p_data->>'patientId');
-   return public.patient_scope(patient);
+   return public.patient_scope(coalesce(patient, p_data)) and (not writing or actor->>'perfil' = 'GERENTE' or split_part(p_path, '/', 3) = 'acoes');
  elsif kind in ('imports', 'auditLogs') then
-   return p_data->>'unidadeId' = actor->>'unidadeId' and (actor->>'perfil' = 'GERENTE' or kind = 'auditLogs');
+   return public.normalize_unit_id(p_data->>'unidadeId') = public.normalize_unit_id(actor->>'unidadeId') and (actor->>'perfil' = 'GERENTE' or kind = 'auditLogs');
  elsif kind = 'diagnostico' then return actor->>'perfil' = 'GERENTE';
  elsif kind = 'parametros' then return not writing or actor->>'perfil' = 'GERENTE';
  end if;
@@ -1205,28 +1260,48 @@ create policy documents_update on public.app_documents for update to authenticat
 drop policy if exists documents_delete on public.app_documents;
 create policy documents_delete on public.app_documents for delete to authenticated using (public.current_profile()->>'perfil' = 'ADMIN');
 
--- Invoker rights preserve RLS. Each batch is a single PostgreSQL transaction.
+-- Enforces document_access and allows authorized GERENTE/ADMIN imports to update pre-existing patient records.
 create or replace function public.write_documents(operations jsonb) returns void
-language plpgsql security invoker set search_path = public
+language plpgsql security definer set search_path = public
 as $$
-declare op jsonb; previous jsonb;
+declare
+  op jsonb;
+  previous jsonb;
+  merged jsonb;
+  actor jsonb := public.current_profile();
+  v_path text;
+  v_kind text;
 begin
+ if actor is null then raise exception 'Write denied: unauthenticated'; end if;
  if jsonb_typeof(operations) <> 'array' or jsonb_array_length(operations) > 500 then raise exception 'Invalid batch'; end if;
  for op in select * from jsonb_array_elements(operations) loop
-   if split_part(op->>'path', '/', 1) = 'pacientes' and public.current_profile()->>'perfil' = 'ACS' then
-     if array_length(string_to_array(op->>'path', '/'), 1) = 2 and ((op->'data') ? 'observacoesGerente' or (op->'data') ? 'observacaoGerenteAtual' or (op->'data') ? 'historicoObservacoesGerente') then
+   v_path := op->>'path';
+   v_kind := split_part(v_path, '/', 1);
+   if v_kind = 'pacientes' and actor->>'perfil' = 'ACS' then
+     if array_length(string_to_array(v_path, '/'), 1) = 2 and ((op->'data') ? 'observacoesGerente' or (op->'data') ? 'observacaoGerenteAtual' or (op->'data') ? 'historicoObservacoesGerente') then
        raise exception 'Only GERENTE or ADMIN can modify manager observations';
      end if;
    end if;
    previous := null;
-   select data into previous from public.app_documents where path = op->>'path' for update;
+   select data into previous from public.app_documents where path = v_path for update;
    if previous is not null then
-     update public.app_documents set data = case when (op->>'merge')::boolean then previous || (op->'data') else op->'data' end,
-       updated_at = now() where path = op->>'path';
-     if not found then raise exception 'Write denied'; end if;
+     merged := case when coalesce((op->>'merge')::boolean, false) then previous || (op->'data') else op->'data' end;
+     if not public.document_access(v_path, merged, true) then
+       raise exception 'Write denied';
+     end if;
+     if actor->>'perfil' = 'ACS' and not public.document_access(v_path, previous, true) then
+       raise exception 'Write denied';
+     end if;
+     update public.app_documents set data = merged, updated_at = now() where path = v_path;
    else
      if coalesce((op->>'must_exist')::boolean, false) then raise exception 'Document not found'; end if;
-     insert into public.app_documents(path, data) values (op->>'path', op->'data');
+     if v_kind = 'pacientes' and array_length(string_to_array(v_path, '/'), 1) = 2 and actor->>'perfil' = 'ACS' then
+       raise exception 'ACS cannot insert patients';
+     end if;
+     if not public.document_access(v_path, op->'data', true) then
+       raise exception 'Write denied';
+     end if;
+     insert into public.app_documents(path, data) values (v_path, op->'data');
    end if;
  end loop;
 end $$;
@@ -1248,10 +1323,310 @@ begin
 end $$;
 revoke all on function public.reconcile_user_profile(text,text,jsonb) from public, anon, authenticated;
 grant execute on function public.reconcile_user_profile(text,text,jsonb) to service_role;
+
+create or replace function public.resolve_my_profile() returns jsonb
+language plpgsql security definer set search_path = public
+as $$
+declare
+  v_uid text := auth.uid()::text;
+  v_email text := lower(trim(coalesce(nullif(current_setting('request.jwt.claim.email', true), ''), '')));
+  v_old_path text;
+  v_data jsonb;
+  v_unit text;
+begin
+  if coalesce(v_uid, '') = '' then return null; end if;
+
+  if v_email = '' and to_regclass('auth.users') is not null then
+    execute 'select lower(trim(email)) from auth.users where id = $1 limit 1' into v_email using auth.uid();
+  end if;
+
+  select path, data into v_old_path, v_data
+  from public.app_documents
+  where collection = 'usuarios'
+    and (
+      path = 'usuarios/' || v_uid
+      or data->>'uid' = v_uid
+      or data->>'authUid' = v_uid
+      or (coalesce(v_email, '') <> '' and lower(trim(coalesce(data->>'email', ''))) = v_email)
+    )
+  order by (path = 'usuarios/' || v_uid) desc, updated_at desc
+  limit 1;
+
+  if v_data is null then return null; end if;
+
+  v_unit := case
+    when v_data->>'perfil' = 'ADMIN' then nullif(trim(coalesce(v_data->>'unidadeId', '')), '')
+    else public.normalize_unit_id(v_data->>'unidadeId')
+  end;
+
+  v_data := v_data || jsonb_build_object(
+    'uid', v_uid,
+    'authUid', v_uid,
+    'authAtiva', true,
+    'unidadeId', v_unit,
+    'updatedAt', now()
+  );
+
+  insert into public.app_documents(path, data, updated_at)
+  values ('usuarios/' || v_uid, v_data, now())
+  on conflict (path) do update set data = excluded.data, updated_at = now();
+
+  if v_old_path is not null and v_old_path <> 'usuarios/' || v_uid then
+    update public.app_documents
+       set data = jsonb_set(data, '{acsId}', to_jsonb(v_uid)),
+           updated_at = now()
+     where collection = 'microareas'
+       and data->>'acsId' = substring(v_old_path from 10);
+    delete from public.app_documents where path = v_old_path;
+  end if;
+
+  return v_data;
+end $$;
+revoke all on function public.resolve_my_profile() from public, anon;
+grant execute on function public.resolve_my_profile() to authenticated, service_role;
+
+create or replace function public.upsert_managed_user_account(
+  p_email text,
+  p_password text default null,
+  p_nome text default null,
+  p_perfil text default 'ACS',
+  p_unidade_id text default null,
+  p_telefone text default null,
+  p_doc_id text default null
+) returns jsonb
+language plpgsql security definer set search_path = public
+as $$
+declare
+  v_actor jsonb := public.current_profile();
+  v_clean_email text := lower(trim(coalesce(p_email, '')));
+  v_old_path text;
+  v_old_data jsonb;
+  v_role text;
+  v_unit text;
+  v_name text;
+  v_phone text;
+  v_uid uuid;
+  v_uid_text text;
+  v_encrypted_pw text;
+  v_profile jsonb;
+begin
+  if v_actor is null or coalesce(v_actor->>'perfil', '') not in ('ADMIN', 'GERENTE') then
+    raise exception 'Acesso restrito à gestão (GERENTE ou ADMIN).';
+  end if;
+
+  if v_clean_email = '' or v_clean_email !~ '^[^\s@]+@[^\s@]+\.[^\s@]+$' then
+    raise exception 'Informe um endereço de e-mail válido.';
+  end if;
+
+  if p_password is not null and trim(p_password) <> '' and length(trim(p_password)) < 8 then
+    raise exception 'A senha deve possuir pelo menos 8 caracteres.';
+  end if;
+
+  select path, data into v_old_path, v_old_data
+  from public.app_documents
+  where collection = 'usuarios'
+    and (
+      lower(trim(coalesce(data->>'email', ''))) = v_clean_email
+      or (coalesce(trim(p_doc_id), '') <> '' and path = 'usuarios/' || trim(p_doc_id))
+    )
+  order by (lower(trim(coalesce(data->>'email', ''))) = v_clean_email) desc, updated_at desc
+  limit 1;
+
+  if v_actor->>'perfil' = 'GERENTE' then
+    if v_old_data is not null and (
+      coalesce(v_old_data->>'perfil', 'ACS') <> 'ACS'
+      or public.normalize_unit_id(v_old_data->>'unidadeId') <> public.normalize_unit_id(v_actor->>'unidadeId')
+    ) then
+      raise exception 'Gerente só pode gerenciar profissionais ACS da sua própria unidade.';
+    end if;
+    v_role := 'ACS';
+    v_unit := public.normalize_unit_id(v_actor->>'unidadeId');
+  else
+    v_role := coalesce(nullif(trim(p_perfil), ''), v_old_data->>'perfil', 'ACS');
+    if v_role not in ('ADMIN', 'GERENTE', 'ACS') then
+      raise exception 'Perfil inválido.';
+    end if;
+    v_unit := case
+      when v_role = 'ADMIN' then null
+      else public.normalize_unit_id(coalesce(nullif(trim(p_unidade_id), ''), v_old_data->>'unidadeId'))
+    end;
+  end if;
+
+  v_name := coalesce(nullif(trim(p_nome), ''), nullif(trim(v_old_data->>'nome'), ''), split_part(v_clean_email, '@', 1));
+  v_phone := coalesce(nullif(trim(p_telefone), ''), nullif(trim(v_old_data->>'telefone'), ''));
+
+  if to_regclass('auth.users') is not null and to_regclass('auth.identities') is not null then
+    execute 'select id from auth.users where lower(email) = $1 limit 1' into v_uid using v_clean_email;
+
+    if p_password is not null and trim(p_password) <> '' then
+      create extension if not exists pgcrypto with schema extensions;
+      v_encrypted_pw := extensions.crypt(trim(p_password), extensions.gen_salt('bf'));
+
+      if v_uid is null then
+        v_uid := gen_random_uuid();
+        insert into auth.users (
+          instance_id, id, aud, role, email, encrypted_password,
+          email_confirmed_at, raw_app_meta_data, raw_user_meta_data,
+          created_at, updated_at, confirmation_token, email_change,
+          email_change_token_new, recovery_token
+        ) values (
+          '00000000-0000-0000-0000-000000000000',
+          v_uid,
+          'authenticated',
+          'authenticated',
+          v_clean_email,
+          v_encrypted_pw,
+          now(),
+          '{"provider":"email","providers":["email"]}'::jsonb,
+          jsonb_build_object('nome', v_name),
+          now(),
+          now(),
+          '', '', '', ''
+        );
+      else
+        update auth.users
+           set encrypted_password = v_encrypted_pw,
+               email_confirmed_at = coalesce(email_confirmed_at, now()),
+               raw_app_meta_data = coalesce(raw_app_meta_data, '{}'::jsonb) || '{"provider":"email","providers":["email"]}'::jsonb,
+               raw_user_meta_data = coalesce(raw_user_meta_data, '{}'::jsonb) || jsonb_build_object('nome', v_name),
+               confirmation_token = coalesce(confirmation_token, ''),
+               email_change = coalesce(email_change, ''),
+               email_change_token_new = coalesce(email_change_token_new, ''),
+               recovery_token = coalesce(recovery_token, ''),
+               updated_at = now()
+         where id = v_uid;
+      end if;
+
+      insert into auth.identities (
+        id, user_id, provider_id, identity_data, provider, last_sign_in_at, created_at, updated_at
+      ) values (
+        gen_random_uuid(),
+        v_uid,
+        v_uid::text,
+        jsonb_build_object('sub', v_uid::text, 'email', v_clean_email, 'email_verified', true, 'phone_verified', false),
+        'email',
+        now(),
+        now(),
+        now()
+      )
+      on conflict (provider_id, provider) do update
+        set user_id = excluded.user_id,
+            identity_data = excluded.identity_data,
+            updated_at = now();
+    end if;
+  else
+    if p_password is not null and trim(p_password) <> '' then
+      begin
+        v_uid := coalesce(nullif(trim(v_old_data->>'authUid'), '')::uuid, gen_random_uuid());
+      exception when others then
+        v_uid := gen_random_uuid();
+      end;
+    end if;
+  end if;
+
+  v_uid_text := coalesce(
+    v_uid::text,
+    nullif(trim(v_old_data->>'authUid'), ''),
+    nullif(trim(v_old_data->>'uid'), ''),
+    case when v_old_path is not null then substring(v_old_path from 10) else null end,
+    gen_random_uuid()::text
+  );
+
+  v_profile := coalesce(v_old_data, '{}'::jsonb) || jsonb_build_object(
+    'uid', v_uid_text,
+    'authUid', case when v_uid is not null then v_uid::text else v_old_data->>'authUid' end,
+    'authAtiva', (v_uid is not null or coalesce((v_old_data->>'authAtiva')::boolean, false)),
+    'nome', v_name,
+    'email', v_clean_email,
+    'telefone', v_phone,
+    'perfil', v_role,
+    'unidadeId', v_unit,
+    'ativo', coalesce((v_old_data->>'ativo')::boolean, true),
+    'updatedAt', now()
+  );
+
+  insert into public.app_documents(path, data, updated_at)
+  values ('usuarios/' || v_uid_text, v_profile, now())
+  on conflict (path) do update set data = excluded.data, updated_at = now();
+
+  if v_old_path is not null and v_old_path <> 'usuarios/' || v_uid_text then
+    update public.app_documents
+       set data = jsonb_set(data, '{acsId}', to_jsonb(v_uid_text)),
+           updated_at = now()
+     where collection = 'microareas'
+       and data->>'acsId' = substring(v_old_path from 10);
+    delete from public.app_documents where path = v_old_path;
+  end if;
+
+  return v_profile;
+end $$;
+revoke all on function public.upsert_managed_user_account(text,text,text,text,text,text,text) from public, anon;
+grant execute on function public.upsert_managed_user_account(text,text,text,text,text,text,text) to authenticated, service_role;
+
+create or replace function public.list_managed_users() returns jsonb
+language plpgsql security definer set search_path = public
+as $$
+declare
+  v_actor jsonb := public.current_profile();
+  v_result jsonb := '[]'::jsonb;
+  r record;
+  v_auth_uid uuid;
+  v_doc_id text;
+  v_status text;
+begin
+  if v_actor is null or coalesce(v_actor->>'perfil', '') not in ('ADMIN', 'GERENTE') then
+    raise exception 'Acesso restrito à gestão.';
+  end if;
+
+  for r in
+    select path, data
+    from public.app_documents
+    where collection = 'usuarios'
+      and (
+        v_actor->>'perfil' = 'ADMIN'
+        or (
+          data->>'perfil' = 'ACS'
+          and public.normalize_unit_id(data->>'unidadeId') = public.normalize_unit_id(v_actor->>'unidadeId')
+        )
+      )
+    order by path
+  loop
+    v_doc_id := substring(r.path from 10);
+    v_auth_uid := null;
+    if to_regclass('auth.users') is not null and coalesce(r.data->>'email', '') <> '' then
+      execute 'select id from auth.users where lower(email) = lower($1) limit 1'
+        into v_auth_uid
+        using r.data->>'email';
+    end if;
+
+    if v_auth_uid is not null then
+      v_status := case when r.path = 'usuarios/' || v_auth_uid::text then 'AUTH_OK' else 'AUTH_UID_DIVERGENTE' end;
+    elsif coalesce((r.data->>'authAtiva')::boolean, false) then
+      v_status := 'AUTH_OK';
+    else
+      v_status := 'AUTH_INEXISTENTE';
+    end if;
+
+    v_result := v_result || jsonb_build_array(
+      r.data || jsonb_build_object(
+        'docId', v_doc_id,
+        'uid', coalesce(v_auth_uid::text, r.data->>'uid', v_doc_id),
+        'authUid', coalesce(v_auth_uid::text, r.data->>'authUid'),
+        'authStatus', v_status
+      )
+    );
+  end loop;
+
+  return v_result;
+end $$;
+revoke all on function public.list_managed_users() from public, anon;
+grant execute on function public.list_managed_users() to authenticated, service_role;
+
+revoke all on function public.normalize_unit_id(text) from public, anon;
 revoke all on function public.current_profile() from public, anon;
 revoke all on function public.patient_scope(jsonb) from public, anon;
 revoke all on function public.document_access(text,jsonb,boolean) from public, anon;
-grant execute on function public.current_profile(), public.patient_scope(jsonb), public.document_access(text,jsonb,boolean) to authenticated, service_role;
+grant execute on function public.normalize_unit_id(text), public.current_profile(), public.patient_scope(jsonb), public.document_access(text,jsonb,boolean) to authenticated, service_role;
 
 -- Lock the parent row to avoid losing simultaneous visits; both writes roll back together.
 create or replace function public.append_patient_action(patient_id text, action jsonb, priority text default null, visit_date text default null) returns void
@@ -1476,9 +1851,9 @@ begin
         insert into public.app_documents (path, data, updated_at)
         values
           (
-            'microareas/USF-003_56',
+            'microareas/ma_USF-003_56',
             jsonb_build_object(
-              'id', 'USF-003_56',
+              'id', 'ma_USF-003_56',
               'unidadeId', 'USF-003',
               'codigo', '56',
               'nome', 'Microárea 56',
@@ -1490,9 +1865,9 @@ begin
             now()
           ),
           (
-            'microareas/USF-003_01',
+            'microareas/ma_USF-003_01',
             jsonb_build_object(
-              'id', 'USF-003_01',
+              'id', 'ma_USF-003_01',
               'unidadeId', 'USF-003',
               'codigo', '01',
               'nome', 'Microárea 01',
@@ -1508,6 +1883,45 @@ begin
               updated_at = now();
       end if;
     end loop;
+
+    -- Reconciliação automática de microáreas legadas (sem prefixo ma_) e normalização de unidadeId
+    for r in
+      select path, data from public.app_documents
+      where collection = 'microareas' and path ~ '^microareas/(?!ma_)[^/]+$'
+    loop
+      if r.data->>'unidadeId' is not null and r.data->>'codigo' is not null then
+        insert into public.app_documents (path, data, updated_at)
+        values (
+          'microareas/ma_' || public.normalize_unit_id(r.data->>'unidadeId') || '_' || (r.data->>'codigo'),
+          r.data || jsonb_build_object(
+            'id', 'ma_' || public.normalize_unit_id(r.data->>'unidadeId') || '_' || (r.data->>'codigo'),
+            'unidadeId', public.normalize_unit_id(r.data->>'unidadeId')
+          ),
+          now()
+        )
+        on conflict (path) do update
+          set data = public.app_documents.data || jsonb_build_object(
+            'acsId', coalesce(public.app_documents.data->>'acsId', excluded.data->>'acsId'),
+            'acsNome', coalesce(public.app_documents.data->>'acsNome', excluded.data->>'acsNome')
+          ),
+          updated_at = now();
+        delete from public.app_documents where path = r.path;
+      end if;
+    end loop;
+
+    -- Garantir que todos os pacientes, microáreas, cargas e usuários da unidade tenham o unidadeId canônico
+    update public.app_documents
+       set data = jsonb_set(data, '{unidadeId}', to_jsonb(public.normalize_unit_id(data->>'unidadeId'))),
+           updated_at = now()
+     where collection in ('pacientes', 'microareas', 'imports', 'auditLogs')
+       and coalesce(data->>'unidadeId', '') is distinct from public.normalize_unit_id(data->>'unidadeId');
+
+    update public.app_documents
+       set data = jsonb_set(data, '{unidadeId}', to_jsonb(public.normalize_unit_id(data->>'unidadeId'))),
+           updated_at = now()
+     where collection = 'usuarios'
+       and coalesce(data->>'perfil', '') in ('GERENTE', 'ACS')
+       and coalesce(data->>'unidadeId', '') is distinct from public.normalize_unit_id(data->>'unidadeId');
   end if;
 end $$;
 commit;

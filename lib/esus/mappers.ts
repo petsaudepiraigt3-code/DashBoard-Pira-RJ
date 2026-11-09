@@ -217,6 +217,15 @@ export function matchHeaderToInternalKey(rawHeader: string): string | null {
     if (normalized.includes("vigencia")) return "vigenciaBolsaFamilia";
     return "beneficiarioBolsaFamilia";
   }
+  if (normalized.includes("celular")) {
+    return "telefoneCelular";
+  }
+  if (normalized.includes("telefone") && normalized.includes("residencial")) {
+    return "telefoneResidencial";
+  }
+  if (normalized.includes("telefone") && normalized.includes("contato")) {
+    return "telefoneContato";
+  }
   if (normalized.includes("dias")) {
     if (normalized.includes("medico")) return "daysSinceMedicalCare";
     if (normalized.includes("enfermagem")) return "daysSinceNursingCare";
@@ -231,4 +240,24 @@ export function matchHeaderToInternalKey(rawHeader: string): string | null {
   }
 
   return null;
+}
+
+export function mapHeaders(headers: string[]): {
+  mappedColumns: { [col: string]: string };
+  unrecognizedColumns: string[];
+} {
+  const mappedColumns: { [col: string]: string } = {};
+  const unrecognizedColumns: string[] = [];
+
+  headers.forEach((h) => {
+    if (!h) return;
+    const mappedKey = matchHeaderToInternalKey(h);
+    if (mappedKey) {
+      mappedColumns[h] = mappedKey;
+    } else {
+      unrecognizedColumns.push(h);
+    }
+  });
+
+  return { mappedColumns, unrecognizedColumns };
 }

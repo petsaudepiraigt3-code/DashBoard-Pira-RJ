@@ -3,7 +3,7 @@ import { db } from "@/lib/store/documents";
 import { ESUSParseResult, StoreImportRecord, NormalizedPatientRecord } from "./types";
 import { getExistingPatientsMap, StorePatientDoc } from "../store/patients";
 import { createImportRecordInStore, updateImportRecordInStore } from "../store/imports";
-import { ensureUnitMicroareaInStore } from "../store/units";
+import { ensureUnitMicroareaInStore, normalizeUnitId } from "../store/units";
 import { maskCPF, maskCNS } from "./normalizer";
 import { PatientCargaSnapshot, PriorityLevel } from "@/types/dcnt";
 export interface ESUSImportProgress {
@@ -501,11 +501,11 @@ export async function executeESUSImportToStore(
   userRole?: string,
   userUnitId?: string
 ): Promise<StoreImportRecord> {
-  const targetUnidadeId = userRole === "GERENTE" && userUnitId ? userUnitId : unidadeId;
+  const targetUnidadeId = userRole === "GERENTE" && userUnitId ? userUnitId : (unidadeId || "USF-003");
   if (!targetUnidadeId) {
     throw new Error("Por favor, selecione uma Unidade de Saúde para realizar a importação.");
   }
-  unidadeId = targetUnidadeId;
+  unidadeId = normalizeUnitId(targetUnidadeId);
 
   const updateProgress = (
     step: ESUSImportProgress["step"],
@@ -698,16 +698,31 @@ export async function executeESUSImportToStore(
 
     if (existingPatient) {
       updatedPatientsCount++;
-      currentBatch.update(patientRef, patientData);
+      currentBatch.set(
+        patientRef,
+        {
+          ...patientData,
+          ...(existingAny?.historicoAcoes ? { historicoAcoes: existingAny.historicoAcoes } : {}),
+          ...(existingAny?.observacoesGerente ? { observacoesGerente: existingAny.observacoesGerente } : {}),
+          ...(existingAny?.observacaoGerenteAtual ? { observacaoGerenteAtual: existingAny.observacaoGerenteAtual } : {}),
+          ...(existingAny?.historicoObservacoesGerente ? { historicoObservacoesGerente: existingAny.historicoObservacoesGerente } : {}),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
       batchOpCount++;
     } else {
       newPatientsCount++;
-      currentBatch.set(patientRef, {
-        ...patientData,
-        createdAt: serverTimestamp(),
-      });
+      currentBatch.set(
+        patientRef,
+        {
+          ...patientData,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
       batchOpCount++;
-
     }
     indexPatient(existingMap, norm, { ...existingPatient, ...patientData, id: patientDocId } as StorePatientDoc);
 

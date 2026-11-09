@@ -4,10 +4,12 @@ import React, { useState, useEffect } from "react";
 import { AppLayout } from "@/components/layout/app-layout";
 import { CardIndicator } from "@/components/ui/card-indicator";
 import { BadgePriority } from "@/components/ui/badge-priority";
+import { WhatsAppButton } from "@/components/ui/whatsapp-button";
 import { Modal } from "@/components/ui/modal";
 import { RegisterActionModal } from "@/components/ui/register-action-modal";
 import { ManagerObservationModal } from "@/components/ui/manager-observation-modal";
 import { getAllPatientsFromStore, savePatientActionInStore } from "@/lib/store/patients";
+import { normalizeUnitId } from "@/lib/store/units";
 import { Patient, PriorityLevel, ActiveSearchRecord, PatientActionType } from "@/types/dcnt";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/auth-context";
@@ -27,7 +29,7 @@ import {
 
 export default function BuscaAtivaPage() {
   const router = useRouter();
-  const { role, userUnitId, userProfile } = useAuth();
+  const { role, userUnitId, userProfile, loading: authLoading } = useAuth();
 
   // Estados dos Filtros
   const [searchQuery, setSearchQuery] = useState("");
@@ -41,33 +43,30 @@ export default function BuscaAtivaPage() {
   const [loading, setLoading] = useState(true);
 
   const loadData = async () => {
+    if (authLoading || !userProfile) return;
     setLoading(true);
+    const activeRole = userProfile?.role || role;
+    const activeUnitId = userProfile?.unitId || userUnitId;
     const realData = await getAllPatientsFromStore({
-      role,
-      userUnitId,
-      assignedMicroareaCodes: userProfile?.assignedMicroareaCodes,
-      acsName: role === "ACS" ? userProfile?.name : undefined,
-      acsId: role === "ACS" ? userProfile?.uid : undefined,
+      role: activeRole,
+      userUnitId: activeUnitId,
+      assignedMicroareaCodes: activeRole === "ACS" ? userProfile?.assignedMicroareaCodes : undefined,
+      acsName: activeRole === "ACS" ? userProfile?.name : undefined,
+      acsId: activeRole === "ACS" ? userProfile?.uid : undefined,
     });
     setPatients(realData || []);
     setLoading(false);
   };
 
   useEffect(() => {
+    if (authLoading || !userProfile) return;
     loadData();
-  }, [role, userUnitId, userProfile]);
+  }, [authLoading, userProfile?.role, userProfile?.unitId, userProfile?.uid]);
 
   useEffect(() => {
-    if (role === "ACS") {
-      if (userProfile?.name) {
-        setFilterACS(userProfile.name);
-      }
-      const codes = userProfile?.assignedMicroareaCodes || [];
-      if (codes.length > 0) {
-        setFilterMicroarea(`Microárea ${codes[0]}`);
-      }
-    }
-  }, [role, userProfile]);
+    setFilterACS("Todos");
+    setFilterMicroarea("Todas");
+  }, [role, userProfile?.uid]);
 
   // Estado do Modal de Registro de Ação
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
@@ -86,11 +85,14 @@ export default function BuscaAtivaPage() {
   const countAtencao = patients.filter((p) => p.priority === "Atenção").length;
   const countAcompanhado = patients.filter((p) => p.priority === "Acompanhado").length;
 
+  const currentUnitId = userProfile?.unitId || userUnitId;
+  const normUnitId = currentUnitId ? normalizeUnitId(currentUnitId) : null;
+
   // Lista dinâmica de ACS e Microáreas da unidade para filtros do Gerente e Admin
   const availableACSList = Array.from(
     new Set(
       patients
-        .filter((p) => role !== "GERENTE" || !userUnitId || (p as any).unidadeId === userUnitId)
+        .filter((p) => role !== "GERENTE" || !normUnitId || normalizeUnitId((p as any).unidadeId) === normUnitId)
         .map((p) => p.acsName)
     )
   ).filter(Boolean).sort();
@@ -98,25 +100,28 @@ export default function BuscaAtivaPage() {
   const availableMicroareasList = Array.from(
     new Set(
       patients
-        .filter((p) => role !== "GERENTE" || !userUnitId || (p as any).unidadeId === userUnitId)
+        .filter((p) => role !== "GERENTE" || !normUnitId || normalizeUnitId((p as any).unidadeId) === normUnitId)
         .map((p) => p.microarea)
     )
   ).filter(Boolean).sort();
 
   // Filtragem dos Pacientes da Busca Ativa
   const filteredPatients = patients.filter((p) => {
-    if (role === "GERENTE" && userUnitId) {
-      const pUnitId = (p as any).unidadeId || "USF-003";
-      if (pUnitId !== userUnitId) return false;
+    const pUnitId = normalizeUnitId((p as any).unidadeId);
+    if (role === "GERENTE" && normUnitId) {
+      if (pUnitId !== normUnitId) return false;
     }
     if (role === "ACS") {
-      if (userUnitId) {
-        const pUnitId = (p as any).unidadeId || "USF-003";
-        if (pUnitId !== userUnitId) return false;
+      if (normUnitId && pUnitId !== normUnitId) return false;
+      const acsCodes = (userProfile?.assignedMicroareaCodes || []).map((c) => {
+        const d = String(c || "").replace(/\D/g, "").trim();
+        return d ? d.padStart(2, "0") : String(c || "").trim();
+      });
+      const rawDigits = (p.microarea || "").replace(/\D/g, "").trim() || ((p as any).microareaCodigo || "").replace(/\D/g, "").trim();
+      const patMACode = rawDigits ? rawDigits.padStart(2, "0") : ((p as any).microareaCodigo || "");
+      if (acsCodes.length > 0 && !acsCodes.includes(patMACode) && !(rawDigits && acsCodes.includes(rawDigits))) {
+        return false;
       }
-      const acsCodes = userProfile?.assignedMicroareaCodes || [];
-      const patMACode = (p.microarea || "").replace(/\D/g, "").trim();
-      if (acsCodes.length > 0 && !acsCodes.includes(patMACode)) return false;
     }
 
     if (searchQuery.trim() !== "") {
@@ -399,7 +404,14 @@ export default function BuscaAtivaPage() {
                 filteredPatients.map((p) => (
                   <tr key={p.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-800/40 transition-colors">
                     <td className="px-4 py-3">
-                      <div className="font-bold text-zinc-900 dark:text-zinc-100">{p.name}</div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-bold text-zinc-900 dark:text-zinc-100">{p.name}</span>
+                        <WhatsAppButton
+                          phoneCell={p.phoneCell}
+                          patientName={p.name}
+                          size="sm"
+                        />
+                      </div>
                       <div className="text-[11px] text-zinc-600 dark:text-zinc-400">
                         {p.cpf !== "Sem CPF" ? `CPF: ${p.cpf}` : p.cns !== "Sem CNS" ? `CNS: ${p.cns}` : "Sem doc"}
                       </div>

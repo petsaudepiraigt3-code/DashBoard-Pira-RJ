@@ -28,22 +28,40 @@ export default function LoginPage() {
     // 1. Tentar autenticar no Supabase Auth primeiro (gera sessão JWT real para o RLS do banco)
     if (isSupabaseConfigured) {
       try {
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem('dev_auth_logged');
+        }
         const { data, error: authError } = await supabase.auth.signInWithPassword({
           email: cleanEmail,
           password: cleanPassword,
         });
         if (!authError && data.user) {
-          const profile = await getDoc(doc(db, 'usuarios', data.user.id));
-          const p = profile.data();
+          let profile = await getDoc(doc(db, 'usuarios', data.user.id));
+          let p = profile.data();
           if (
-            profile.exists() &&
+            !profile.exists() ||
+            !['ADMIN', 'GERENTE', 'ACS'].includes(p?.perfil) ||
+            (p?.perfil !== 'ADMIN' && !p?.unidadeId)
+          ) {
+            try {
+              const { data: resolvedProfile } = await supabase.rpc('resolve_my_profile');
+              if (resolvedProfile && typeof resolvedProfile === 'object') {
+                p = resolvedProfile as Record<string, any>;
+              } else {
+                profile = await getDoc(doc(db, 'usuarios', data.user.id));
+                p = profile.data();
+              }
+            } catch {
+              // Ignorar falha de RPC caso ainda não tenha sido aplicada no banco
+            }
+          }
+          if (
+            p &&
             p.ativo !== false &&
             ['ADMIN', 'GERENTE', 'ACS'].includes(p.perfil) &&
             (p.perfil === 'ADMIN' || p.unidadeId)
           ) {
-            if (typeof window !== 'undefined') {
-              localStorage.removeItem('dev_auth_logged');
-            }
+            router.replace('/dashboard');
             return;
           }
           await supabase.auth.signOut();

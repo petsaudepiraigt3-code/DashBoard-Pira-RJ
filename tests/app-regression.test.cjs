@@ -222,3 +222,94 @@ test('Manager observations: GERENTE can add and edit with history, ACS can view 
  ]),/Only GERENTE or ADMIN/i);
  } finally {await h.close();}
 });
+
+test('GERENTE views 100% of unit patients across all microareas, and multi-unit separation isolates Pirai units', async () => {
+ const h=await harness();try {
+  const units=h.load('lib/store/units.ts');
+  const patientsStore=h.load('lib/store/patients.ts');
+  const documents=h.load('lib/store/documents.ts');
+
+  // 1. Create a second health unit for Pirai (e.g. USF-002)
+  await h.as('admin');
+  const unit2Id=await units.createHealthUnit({
+   codigo:'USF-002',
+   nome:'USF Pirai Centro',
+   tipo:'USF',
+   municipio:'Pirai',
+   ativo:true,
+  });
+  assert.equal(unit2Id,'USF-002');
+
+  // 2. Insert patients in unit u1: microarea 01 (ACS), microarea 56 (ACS), and microarea 99 (no ACS)
+  await h.as('manager');
+  await documents.setDoc(documents.doc(documents.db,'pacientes','p-u1-01'),{
+   nome:'Paciente Microarea 01',
+   unidadeId:'u1',
+   microarea:'Microarea 01',
+   microareaCodigo:'01',
+   prioridade:'Alta',
+   historicoAcoes:[{id:'act-1',tipoAcao:'Visita Domiciliar',dataAcao:'2026-11-01',resultado:'Realizada'}],
+  });
+  await documents.setDoc(documents.doc(documents.db,'pacientes','p-u1-56'),{
+   nome:'Paciente Microarea 56',
+   unidadeId:'u1',
+   microarea:'Microarea 56',
+   microareaCodigo:'56',
+   prioridade:'Media',
+  });
+  await documents.setDoc(documents.doc(documents.db,'pacientes','p-u1-sem-acs'),{
+   nome:'Paciente Sem ACS',
+   unidadeId:'u1',
+   microarea:'Microarea 99',
+   microareaCodigo:'99',
+   prioridade:'Alta',
+  });
+
+  // 3. Verify manager of u1 CANNOT write patients into unit USF-002 (RLS unit isolation)
+  await assert.rejects(
+   documents.setDoc(documents.doc(documents.db,'pacientes','p-u2-denied'),{
+    nome:'Tentativa Indevida',
+    unidadeId:'USF-002',
+    microarea:'Microarea 01',
+   }),
+   /Write denied/
+  );
+
+  // Insert patient in unit USF-002 (Pirai) as admin
+  await h.as('admin');
+  await documents.setDoc(documents.doc(documents.db,'pacientes','p-u2-01'),{
+   nome:'Paciente Pirai Centro',
+   unidadeId:'USF-002',
+   microarea:'Microarea 01',
+   microareaCodigo:'01',
+   prioridade:'Alta',
+  });
+  await h.as('manager');
+
+  // 4. Verify GERENTE of u1 sees 100% of u1 patients (3 patients) and zero patients from USF-002
+  const gerentePatients=await patientsStore.getAllPatientsFromStore({role:'GERENTE',userUnitId:'u1'});
+  assert.equal(gerentePatients.length,3);
+  const names=gerentePatients.map(p=>p.name);
+  assert.ok(names.includes('Paciente Microarea 01'));
+  assert.ok(names.includes('Paciente Microarea 56'));
+  assert.ok(names.includes('Paciente Sem ACS'));
+  assert.ok(!names.includes('Paciente Pirai Centro'));
+
+  // 5. Verify ACS of u1 only sees their assigned microarea
+  await h.as('acs');
+  const acsOnly01=await patientsStore.getAllPatientsFromStore({role:'ACS',userUnitId:'u1',assignedMicroareaCodes:['01']});
+  assert.equal(acsOnly01.length,1);
+  assert.equal(acsOnly01[0].name,'Paciente Microarea 01');
+
+  // 6. Verify merge preserves actions on existing patient
+  await h.as('manager');
+  await documents.setDoc(documents.doc(documents.db,'pacientes','p-u1-01'),{
+   telefoneCelular:'24999998888',
+   updatedAt:'2026-11-09T10:00:00.000Z',
+  },{merge:true});
+  const mergedPatient=(await documents.getDoc(documents.doc(documents.db,'pacientes','p-u1-01'))).data();
+  assert.equal(mergedPatient.telefoneCelular,'24999998888');
+  assert.equal(mergedPatient.nome,'Paciente Microarea 01');
+  assert.equal(mergedPatient.historicoAcoes.length,1);
+ } finally {await h.close();}
+});

@@ -3,9 +3,11 @@
 import React, { useState, useEffect, useMemo, Suspense } from "react";
 import { AppLayout } from "@/components/layout/app-layout";
 import { getAllPatientsFromStore } from "@/lib/store/patients";
+import { normalizeUnitId } from "@/lib/store/units";
 import { DEFAULT_DCNT_PARAMETERS, getDcntParametersFromStore } from "@/lib/store/parameters";
 import { DcntParameters, Patient } from "@/types/dcnt";
 import { BadgePriority } from "@/components/ui/badge-priority";
+import { WhatsAppButton } from "@/components/ui/whatsapp-button";
 import { ManagerObservationModal } from "@/components/ui/manager-observation-modal";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -50,7 +52,7 @@ function PacientesContent() {
   const paramACS = searchParams.get("acs");
   const paramMicroarea = searchParams.get("microarea");
 
-  const { role, userUnitId, userProfile } = useAuth();
+  const { role, userUnitId, userProfile, loading: authLoading } = useAuth();
 
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(true);
@@ -81,15 +83,17 @@ function PacientesContent() {
   }, [paramACS, paramMicroarea]);
 
   const loadData = async () => {
+    if (authLoading || !userProfile) return;
+    const profile = userProfile;
     setLoading(true);
 
     const [realData, loadedParams] = await Promise.all([
       getAllPatientsFromStore({
-        role,
-        userUnitId,
-        assignedMicroareaCodes: userProfile?.assignedMicroareaCodes,
-        acsName: role === "ACS" ? userProfile?.name : undefined,
-        acsId: role === "ACS" ? userProfile?.uid : undefined,
+        role: profile.role,
+        userUnitId: profile.unitId || userUnitId,
+        assignedMicroareaCodes: profile.role === "ACS" ? profile.assignedMicroareaCodes : undefined,
+        acsName: profile.role === "ACS" ? profile.name : undefined,
+        acsId: profile.role === "ACS" ? profile.uid : undefined,
       }),
       getDcntParametersFromStore(),
     ]);
@@ -99,26 +103,29 @@ function PacientesContent() {
   };
 
   useEffect(() => {
+    if (authLoading || !userProfile) return;
     loadData();
-  }, [role, userUnitId, userProfile]);
+  }, [authLoading, userProfile?.role, userProfile?.unitId, userProfile?.uid]);
 
   useEffect(() => {
-    if (role === "ACS") {
-      setFilterACS("Todos");
-      setFilterMicroarea("Todas");
+    if (role === "ACS" || role === "GERENTE" || role === "ADMIN") {
+      setFilterACS(paramACS || "Todos");
+      setFilterMicroarea(paramMicroarea || "Todas");
     }
-  }, [role, userProfile]);
+  }, [role, userProfile?.uid]);
 
   const normalizedAcsCodes = (userProfile?.assignedMicroareaCodes || []).map((c) => {
     const d = String(c || "").replace(/\D/g, "").trim();
     return d ? d.padStart(2, "0") : String(c || "").trim();
   });
 
+  const normUnitId = userUnitId ? normalizeUnitId(userUnitId) : null;
+
   // Lista dinâmica de ACS e Microáreas da unidade para filtros do Gerente e Admin
   const availableACSList = Array.from(
     new Set(
       patients
-        .filter((p) => role !== "GERENTE" || !userUnitId || (p as any).unidadeId === userUnitId)
+        .filter((p) => role !== "GERENTE" || !normUnitId || normalizeUnitId((p as any).unidadeId) === normUnitId)
         .map((p) => p.acsName)
     )
   ).filter(Boolean).sort();
@@ -126,21 +133,18 @@ function PacientesContent() {
   const availableMicroareasList = Array.from(
     new Set(
       patients
-        .filter((p) => role !== "GERENTE" || !userUnitId || (p as any).unidadeId === userUnitId)
+        .filter((p) => role !== "GERENTE" || !normUnitId || normalizeUnitId((p as any).unidadeId) === normUnitId)
         .map((p) => p.microarea)
     )
   ).filter(Boolean).sort();
 
   const filteredPatients = patients.filter((p) => {
-    if (role === "GERENTE" && userUnitId) {
-      const pUnitId = (p as any).unidadeId || "USF-003";
-      if (pUnitId !== userUnitId) return false;
+    const pUnitId = normalizeUnitId((p as any).unidadeId);
+    if (role === "GERENTE" && normUnitId) {
+      if (pUnitId !== normUnitId) return false;
     }
     if (role === "ACS") {
-      if (userUnitId) {
-        const pUnitId = (p as any).unidadeId || "USF-003";
-        if (pUnitId !== userUnitId) return false;
-      }
+      if (normUnitId && pUnitId !== normUnitId) return false;
       const rawDigits = (p.microarea || "").replace(/\D/g, "").trim() || ((p as any).microareaCodigo || "").replace(/\D/g, "").trim();
       const patMACode = rawDigits ? rawDigits.padStart(2, "0") : ((p as any).microareaCodigo || "");
       if (normalizedAcsCodes.length === 0 || (!normalizedAcsCodes.includes(patMACode) && !(rawDigits && normalizedAcsCodes.includes(rawDigits)))) {
@@ -304,7 +308,14 @@ function PacientesContent() {
                     className="hover:bg-zinc-50 dark:hover:bg-zinc-800/40 cursor-pointer transition-colors"
                   >
                     <td className="px-4 py-3">
-                      <div className="font-bold text-zinc-900 dark:text-zinc-100">{p.name}</div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-bold text-zinc-900 dark:text-zinc-100">{p.name}</span>
+                        <WhatsAppButton
+                          phoneCell={p.phoneCell}
+                          patientName={p.name}
+                          size="sm"
+                        />
+                      </div>
                       <div className="text-[11px] text-zinc-500">
                         {p.cpf !== "Sem CPF" ? `CPF: ${p.cpf}` : p.cns !== "Sem CNS" ? `CNS: ${p.cns}` : "Sem documento"}
                       </div>

@@ -18,10 +18,11 @@ import {
 } from "@/types/dcnt";
 import { useAuth } from "@/context/auth-context";
 import { BadgePriority } from "@/components/ui/badge-priority";
+import { WhatsAppButton } from "@/components/ui/whatsapp-button";
 import { CardIndicator } from "@/components/ui/card-indicator";
 import { LineChartSVG } from "@/components/ui/charts";
 import { useRouter } from "next/navigation";
-import { formatDateBR } from "@/lib/utils/formatters";
+import { formatDateBR, formatPhoneBR } from "@/lib/utils/formatters";
 import { compareActionsChronological } from "@/lib/utils/returns";
 import { PriorityExplanationCard } from "@/components/patients/priority-explanation-card";
 import { PatientEvolutionHistory } from "@/components/patients/patient-evolution-history";
@@ -259,10 +260,15 @@ export default function PacienteDetalhePage({
               {patient.name.substring(0, 2).toUpperCase()}
             </div>
             <div>
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-2.5">
                 <h1 className="text-xl font-extrabold text-zinc-900 dark:text-zinc-50">
                   {patient.name}
                 </h1>
+                <WhatsAppButton
+                  phoneCell={patient.phoneCell}
+                  patientName={patient.name}
+                  size="md"
+                />
                 <BadgePriority priority={patient.priority} />
               </div>
               <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
@@ -293,7 +299,7 @@ export default function PacienteDetalhePage({
           <div className="flex flex-wrap gap-2 text-xs font-medium">
             <div className="flex items-center gap-1.5 rounded-lg bg-zinc-100 px-3 py-1.5 dark:bg-zinc-800">
               <Phone className="h-3.5 w-3.5 text-zinc-500" />
-              <span>{patient.phone || "Sem telefone"}</span>
+              <span>{patient.phone ? formatPhoneBR(patient.phone) : "Sem telefone"}</span>
             </div>
             <div className="flex items-center gap-1.5 rounded-lg bg-zinc-100 px-3 py-1.5 dark:bg-zinc-800">
               <MapPin className="h-3.5 w-3.5 text-zinc-500" />
