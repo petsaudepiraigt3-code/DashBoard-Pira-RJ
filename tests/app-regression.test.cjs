@@ -313,3 +313,49 @@ test('GERENTE views 100% of unit patients across all microareas, and multi-unit 
   assert.equal(mergedPatient.historicoAcoes.length,1);
  } finally {await h.close();}
 });
+
+test('children up to 2 years old are identified as risk and assigned Alta priority', async () => {
+ const h = await harness();
+ try {
+  const priorityModule = h.load('lib/utils/priority.ts');
+  const filtersModule = h.load('lib/utils/patient-filters.ts');
+
+  // 1. Criança de 1 ano sem nenhum fator de DCNT (PA normal, visita em dia)
+  const babyResult = priorityModule.calculateAdminPriorityScore({
+   age: 1,
+   isChildUnder2: true,
+   isElderly: false,
+   isObese: false,
+   systolic: 100,
+   diastolic: 60,
+  });
+
+  assert.equal(babyResult.priority, 'Alta');
+  assert.ok(babyResult.score >= 6);
+  assert.ok(babyResult.contributingFactors.some(f => f.id === 'PRIMEIRA_INFANCIA'));
+  assert.match(babyResult.reason, /Primeira Infância/);
+
+  // 2. Criança de 0 anos (recém-nascido / bebê em meses)
+  const newbornResult = priorityModule.calculateAdminPriorityScore({
+   age: 0,
+   isElderly: false,
+   isObese: false,
+  });
+  assert.equal(newbornResult.priority, 'Alta');
+
+  // 3. Criança de 3 anos (não está na 1ª infância 0-2 anos) sem fatores DCNT
+  const olderChildResult = priorityModule.calculateAdminPriorityScore({
+   age: 3,
+   isElderly: false,
+   isObese: false,
+  });
+  assert.equal(olderChildResult.priority, 'Acompanhado');
+
+  // 4. Verificação dos filtros utilitários
+  assert.equal(filtersModule.isCriancaAte2Anos({ age: 0, isChildUnder2: true }), true);
+  assert.equal(filtersModule.isCriancaAte2Anos({ age: 2 }), true);
+  assert.equal(filtersModule.isCriancaAte2Anos({ age: 3 }), false);
+ } finally {
+  await h.close();
+ }
+});

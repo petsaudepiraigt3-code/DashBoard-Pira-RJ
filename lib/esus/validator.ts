@@ -275,10 +275,12 @@ export function validateAndNormalizeESUSData(
     const lastHomeVisit = deriveCareDate(fields.dataUltimaVisitaACS, daysHomeVisit, monthsHomeVisit);
 
     const elderlyCutoff = params.elderlyAgeCutoff ?? 60;
+    const childCutoff = params.childUnder2AgeCutoff ?? 2;
     const obesityCutoff = params.obesityImcCutoff ?? 30;
     const overweightCutoff = params.overweightImcCutoff ?? 25;
 
     const isElderly = ageVal >= elderlyCutoff;
+    const isChildUnder2 = ageVal >= 0 && ageVal <= childCutoff;
     const isObese = !!imcVal && imcVal >= obesityCutoff;
     const isOverweight = !!imcVal && imcVal >= overweightCutoff;
 
@@ -292,6 +294,8 @@ export function validateAndNormalizeESUSData(
         lastHomeVisit,
         isElderly,
         isObese,
+        isChildUnder2,
+        age: ageVal,
       },
       params
     );
@@ -361,6 +365,7 @@ export function validateAndNormalizeESUSData(
       isSmoker: parseBooleanESUS(fields.isSmoker),
       hasCardiovascularDisease: parseBooleanESUS(fields.hasCardiovascularDisease),
       isElderly,
+      isChildUnder2,
       isObese,
       isOverweight,
       priority: priorityObj.priority,

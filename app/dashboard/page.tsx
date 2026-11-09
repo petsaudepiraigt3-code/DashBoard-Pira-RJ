@@ -33,6 +33,7 @@ import { getSortedPendingReturns } from "@/lib/utils/returns";
 import { RegisterActionModal } from "@/components/ui/register-action-modal";
 import {
   isIdoso,
+  isCriancaAte2Anos,
   isObesidade,
   isPAAlterada,
   isSemPARecente,
@@ -162,6 +163,7 @@ export default function DashboardPage() {
     const elderlyCutoff = dcntParams.elderlyAgeCutoff ?? 60;
     if (filterAgeGroup === "Idosos (60+)" && pat.age < elderlyCutoff) return false;
     if (filterAgeGroup === "Adultos (18-59)" && (pat.age < 18 || pat.age >= elderlyCutoff)) return false;
+    if (filterAgeGroup === "Crianças (0-2)" && !isCriancaAte2Anos(pat, dcntParams)) return false;
 
     if (filterCondition === "Hipertensão" && !pat.hasHypertension) return false;
     if (filterCondition === "Diabetes" && !pat.hasDiabetes) return false;
@@ -386,9 +388,10 @@ export default function DashboardPage() {
             <select
               value={filterAgeGroup}
               onChange={(e) => setFilterAgeGroup(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-900 shadow-2xs dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100"
+              className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-900 shadow-2xs dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 cursor-pointer"
             >
               <option value="Todas">Todas</option>
+              <option value="Crianças (0-2)">Crianças (0-2 anos)</option>
               <option value="Adultos (18-59)">Adultos (18-59)</option>
               <option value="Idosos (60+)">Idosos (60+)</option>
             </select>

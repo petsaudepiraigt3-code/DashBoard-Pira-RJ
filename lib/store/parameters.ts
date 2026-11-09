@@ -6,6 +6,8 @@ export const DEFAULT_DCNT_PARAMETERS: DcntParameters = {
   monthsWithoutVisit: 3,
   monthsWithoutMedicalCare: 6,
   elderlyAgeCutoff: 60,
+  childUnder2AgeCutoff: 2,
+  childUnder2HighPriority: true,
   obesityImcCutoff: 30,
   overweightImcCutoff: 25,
   systolicAlteradaCutoff: 140,
@@ -15,6 +17,7 @@ export const DEFAULT_DCNT_PARAMETERS: DcntParameters = {
     outdatedPA: 2,
     outdatedVisit: 2,
     elderly: 1,
+    childUnder2: 6,
     obesity: 1,
     multipleConditions: 2,
   },
@@ -38,6 +41,12 @@ function normalizeParameters(data: Partial<DcntParameters>): DcntParameters {
       data.monthsWithoutMedicalCare ?? DEFAULT_DCNT_PARAMETERS.monthsWithoutMedicalCare
     ),
     elderlyAgeCutoff: Number(data.elderlyAgeCutoff ?? DEFAULT_DCNT_PARAMETERS.elderlyAgeCutoff),
+    childUnder2AgeCutoff: Number(
+      data.childUnder2AgeCutoff ?? DEFAULT_DCNT_PARAMETERS.childUnder2AgeCutoff ?? 2
+    ),
+    childUnder2HighPriority: Boolean(
+      data.childUnder2HighPriority ?? DEFAULT_DCNT_PARAMETERS.childUnder2HighPriority ?? true
+    ),
     obesityImcCutoff: Number(data.obesityImcCutoff ?? DEFAULT_DCNT_PARAMETERS.obesityImcCutoff),
     overweightImcCutoff: Number(data.overweightImcCutoff ?? DEFAULT_DCNT_PARAMETERS.overweightImcCutoff),
     systolicAlteradaCutoff: Number(
@@ -58,6 +67,9 @@ function normalizeParameters(data: Partial<DcntParameters>): DcntParameters {
       ),
       elderly: Number(
         data.priorityWeights?.elderly ?? DEFAULT_DCNT_PARAMETERS.priorityWeights.elderly
+      ),
+      childUnder2: Number(
+        data.priorityWeights?.childUnder2 ?? DEFAULT_DCNT_PARAMETERS.priorityWeights.childUnder2 ?? 6
       ),
       obesity: Number(
         data.priorityWeights?.obesity ?? DEFAULT_DCNT_PARAMETERS.priorityWeights.obesity

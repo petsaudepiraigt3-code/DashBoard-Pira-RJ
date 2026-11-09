@@ -1798,6 +1798,19 @@ export default function ConfiguracoesPage() {
                   </div>
                   <div>
                     <label className="block font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                      Corte Criança 1ª Infância (≤ anos)
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={5}
+                      value={params.childUnder2AgeCutoff ?? 2}
+                      onChange={(e) => setParams({ ...params, childUnder2AgeCutoff: Number(e.target.value) })}
+                      className="w-full rounded-lg border border-zinc-300 p-2 font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
                       IMC Sobrepeso (≥ kg/m²)
                     </label>
                     <input
@@ -1833,7 +1846,7 @@ export default function ConfiguracoesPage() {
               <h3 className="text-xs font-extrabold uppercase tracking-wider text-blue-600 dark:text-blue-400">
                 3. Pesos da Pontuação de Busca Ativa
               </h3>
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-xs">
                 <div>
                   <label className="block font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
                     Peso: PA Alterada
@@ -1908,6 +1921,24 @@ export default function ConfiguracoesPage() {
                 </div>
                 <div>
                   <label className="block font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                    Peso: Criança (0-2 anos)
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={10}
+                    value={params.priorityWeights.childUnder2 ?? 6}
+                    onChange={(e) =>
+                      setParams({
+                        ...params,
+                        priorityWeights: { ...params.priorityWeights, childUnder2: Number(e.target.value) },
+                      })
+                    }
+                    className="w-full rounded-lg border border-zinc-300 p-2 font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
                     Peso: Obesidade
                   </label>
                   <input
@@ -1924,6 +1955,20 @@ export default function ConfiguracoesPage() {
                     className="w-full rounded-lg border border-zinc-300 p-2 font-bold dark:border-zinc-700 dark:bg-zinc-800"
                   />
                 </div>
+              </div>
+
+              <div className="pt-2 border-t border-zinc-100 dark:border-zinc-800">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={params.childUnder2HighPriority ?? true}
+                    onChange={(e) => setParams({ ...params, childUnder2HighPriority: e.target.checked })}
+                    className="h-4 w-4 rounded border-zinc-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                  />
+                  <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+                    Definir automaticamente <strong className="text-red-600 dark:text-red-400">Alta Prioridade</strong> para Crianças de até 2 anos (Primeira Infância / Puericultura)
+                  </span>
+                </label>
               </div>
             </div>
 

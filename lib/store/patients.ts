@@ -388,6 +388,7 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
         microareaCodigo: patMACode || undefined,
         acsName: resolvedACSName,
         isElderly: (data.idade || 0) >= 60,
+        isChildUnder2: data.idade !== null && data.idade !== undefined && data.idade >= 0 && data.idade <= 2,
         hasHypertension: data.hasHypertension || (data.pressaoSistolicaAtual && data.pressaoSistolicaAtual >= 140) || false,
         hasDiabetes: data.hasDiabetes || false,
         isObese,

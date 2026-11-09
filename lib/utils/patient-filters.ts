@@ -15,6 +15,17 @@ export function isIdoso(
   return patient.isElderly || (patient.age || 0) >= cutoff;
 }
 
+export function isCriancaAte2Anos(
+  patient: Patient,
+  params: DcntParameters = DEFAULT_DCNT_PARAMETERS
+): boolean {
+  const cutoff = params.childUnder2AgeCutoff ?? 2;
+  return (
+    Boolean(patient.isChildUnder2) ||
+    (patient.age !== undefined && patient.age !== null && patient.age >= 0 && patient.age <= cutoff)
+  );
+}
+
 export function isSobrepeso(
   patient: Patient,
   params: DcntParameters = DEFAULT_DCNT_PARAMETERS

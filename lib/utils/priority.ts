@@ -13,6 +13,8 @@ export interface AdminPriorityInput {
   lastHomeVisit?: string | null;
   isElderly: boolean;
   isObese: boolean;
+  isChildUnder2?: boolean;
+  age?: number | null;
 }
 
 /**
@@ -99,12 +101,15 @@ export function calculateAdminPriorityScore(
   const monthsPACutoff = params.monthsWithoutPA ?? 6;
   const monthsVisitCutoff = params.monthsWithoutVisit ?? 3;
   const elderlyCutoff = params.elderlyAgeCutoff ?? 60;
+  const childCutoff = params.childUnder2AgeCutoff ?? 2;
+  const childHighPriority = params.childUnder2HighPriority ?? true;
   const obesityCutoff = params.obesityImcCutoff ?? 30;
 
   const wAlteredPA = params.priorityWeights?.alteredPA ?? 4;
   const wOutdatedPA = params.priorityWeights?.outdatedPA ?? 2;
   const wOutdatedVisit = params.priorityWeights?.outdatedVisit ?? 2;
   const wElderly = params.priorityWeights?.elderly ?? 1;
+  const wChildUnder2 = params.priorityWeights?.childUnder2 ?? 6;
   const wObesity = params.priorityWeights?.obesity ?? 1;
 
   const highCutoff = params.priorityCutoffs?.high ?? 6;
@@ -186,9 +191,26 @@ export function calculateAdminPriorityScore(
     });
   }
 
+  // 6. Criança até 2 anos (Primeira Infância / Puericultura prioritária)
+  const isChild =
+    Boolean(record.isChildUnder2) ||
+    (record.age !== undefined && record.age !== null && record.age >= 0 && record.age <= childCutoff);
+
+  if (isChild) {
+    score += wChildUnder2;
+    reasons.push(`Criança de até ${childCutoff} anos (Primeira Infância / Puericultura prioritária)`);
+    contributingFactors.push({
+      id: "PRIMEIRA_INFANCIA",
+      title: `Criança de até ${childCutoff} anos (Primeira Infância)`,
+      description: `Criança na faixa etária prioritária de puericultura e desenvolvimento infantil (0 a ${childCutoff} anos), com monitoramento de alta prioridade preconizado pela Atenção Primária à Saúde.`,
+      source: "e-SUS APS",
+      scoreContribution: wChildUnder2,
+    });
+  }
+
   // Determinação Estrita do Nível
   let priority: "Alta" | "Média" | "Atenção" | "Acompanhado" = "Acompanhado";
-  if (isPaElevated || score >= highCutoff) {
+  if (isPaElevated || (isChild && childHighPriority) || score >= highCutoff) {
     priority = "Alta";
   } else if (score >= mediumCutoff) {
     priority = "Média";
@@ -235,8 +257,12 @@ export function getPriorityExplanation(
   }
 
   const elderlyCutoff = params.elderlyAgeCutoff ?? 60;
+  const childCutoff = params.childUnder2AgeCutoff ?? 2;
   const obesityCutoff = params.obesityImcCutoff ?? 30;
   const isElderly = patient.isElderly || patient.age >= elderlyCutoff;
+  const isChildUnder2 =
+    patient.isChildUnder2 ||
+    (patient.age !== undefined && patient.age !== null && patient.age >= 0 && patient.age <= childCutoff);
   const isObese = patient.isObese || (patient.lastWeight?.imc ? patient.lastWeight.imc >= obesityCutoff : false);
 
   // Executa o cálculo da regra oficial
@@ -249,6 +275,8 @@ export function getPriorityExplanation(
       lastHomeVisit: lastVisit,
       isElderly,
       isObese,
+      isChildUnder2,
+      age: patient.age,
     },
     params
   );
@@ -282,7 +310,9 @@ export function getPriorityExplanation(
     factors.push({
       id: "SEM_FATORES_RISCO_ATIVOS",
       title: "Parâmetros de Monitoramento em Conformidade",
-      description: "Ausência de pressão arterial alterada (≥ 140/90 mmHg) e indicadores de acompanhamento atualizados, sem pontuação de busca ativa pendente.",
+      description: isChildUnder2
+        ? "Acompanhamento infantil, puericultura e visitas domiciliares realizadas dentro do cronograma preconizado pela Atenção Primária à Saúde."
+        : "Ausência de pressão arterial alterada (≥ 140/90 mmHg) e indicadores de acompanhamento atualizados, sem pontuação de busca ativa pendente.",
       source: "e-SUS APS",
     });
   } else if (factors.length === 0) {

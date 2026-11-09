@@ -112,6 +112,7 @@ export interface NormalizedPatientRecord {
   
   // Fatores derivados, condições e prioridade
   isElderly: boolean;
+  isChildUnder2?: boolean;
   isObese: boolean;
   isOverweight: boolean;
   hasHypertension?: boolean;

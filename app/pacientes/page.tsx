@@ -27,6 +27,7 @@ import { useAuth } from "@/context/auth-context";
 import { formatDateBR } from "@/lib/utils/formatters";
 import {
   isIdoso,
+  isCriancaAte2Anos,
   isSobrepeso,
   isObesidade,
   isPAAlterada,
@@ -36,6 +37,7 @@ import {
 } from "@/lib/utils/patient-filters";
 
 const FILTER_LABELS: Record<string, string> = {
+  "criancas-ate-2-anos": "Crianças de até 2 anos (Primeira Infância)",
   "idosos": "Idosos (60+ anos)",
   "sobrepeso": "Sobrepeso",
   "obesidade": "Obesidade",
@@ -165,6 +167,7 @@ function PacientesContent() {
     if (filterSex !== "Todos" && p.sex !== filterSex) return false;
 
     // Filtros específicos vindos via Query String do Dashboard
+    if (activeFilter === "criancas-ate-2-anos" && !isCriancaAte2Anos(p, dcntParams)) return false;
     if (activeFilter === "idosos" && !isIdoso(p, dcntParams)) return false;
     if (activeFilter === "sobrepeso" && !isSobrepeso(p, dcntParams)) return false;
     if (activeFilter === "obesidade" && !isObesidade(p, dcntParams)) return false;
@@ -338,7 +341,14 @@ function PacientesContent() {
                       )}
                     </td>
                     <td className="px-4 py-3 text-zinc-700 dark:text-zinc-300">
-                      {p.age} anos ({p.sex.substring(0, 1)})
+                      {p.age === 0 ? "< 1 ano" : p.age === 1 ? "1 ano" : `${p.age} anos`} ({p.sex.substring(0, 1)})
+                      {(p.isChildUnder2 || (p.age >= 0 && p.age <= 2)) && (
+                        <div className="mt-0.5">
+                          <span className="inline-block rounded bg-teal-100 px-1.5 py-0.5 text-[10px] font-bold text-teal-800 dark:bg-teal-950 dark:text-teal-300">
+                            0-2 anos
+                          </span>
+                        </div>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-zinc-700 dark:text-zinc-300">
                       <div className="font-semibold">{p.microarea}</div>

@@ -117,6 +117,7 @@ export interface Patient {
   
   // Condições e Fatores de Risco
   isElderly: boolean; // age >= 60
+  isChildUnder2?: boolean; // age <= 2 anos (Primeira Infância / Puericultura)
   hasHypertension: boolean;
   hasDiabetes: boolean;
   isObese: boolean;
@@ -264,6 +265,8 @@ export interface DcntParameters {
   monthsWithoutVisit: number;
   monthsWithoutMedicalCare?: number;
   elderlyAgeCutoff: number;
+  childUnder2AgeCutoff?: number;
+  childUnder2HighPriority?: boolean;
   obesityImcCutoff: number;
   overweightImcCutoff: number;
   systolicAlteradaCutoff?: number;
@@ -273,6 +276,7 @@ export interface DcntParameters {
     outdatedPA?: number;
     outdatedVisit: number;
     elderly: number;
+    childUnder2?: number;
     obesity?: number;
     multipleConditions: number;
   };

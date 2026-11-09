@@ -272,7 +272,7 @@ export default function PacienteDetalhePage({
                 <BadgePriority priority={patient.priority} />
               </div>
               <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
-                CPF: {patient.cpf} | CNS: {patient.cns} | {patient.age} anos ({patient.sex})
+                CPF: {patient.cpf} | CNS: {patient.cns} | {patient.age === 0 ? "Menor de 1 ano" : patient.age === 1 ? "1 ano" : `${patient.age} anos`} ({patient.sex})
                 {patient.birthDate ? ` | Nasc.: ${formatDateBR(patient.birthDate)}` : ""}
                 {patient.raceColor ? ` | Raça/Cor: ${patient.raceColor}` : ""}
                 {patient.bolsaFamilia !== undefined
@@ -386,6 +386,11 @@ export default function PacienteDetalhePage({
             {patient.isElderly && (
               <span className="rounded-md bg-indigo-100 px-2.5 py-1 text-xs font-bold text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300">
                 Idoso (60+ anos)
+              </span>
+            )}
+            {(patient.isChildUnder2 || (patient.age >= 0 && patient.age <= 2)) && (
+              <span className="rounded-md bg-teal-100 px-2.5 py-1 text-xs font-bold text-teal-800 dark:bg-teal-950 dark:text-teal-300">
+                Criança até 2 anos (Primeira Infância / Puericultura)
               </span>
             )}
           </div>

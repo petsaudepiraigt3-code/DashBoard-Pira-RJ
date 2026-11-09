@@ -139,6 +139,7 @@ export default function BuscaAtivaPage() {
     if (filterCondition === "Hipertensão" && !p.hasHypertension) return false;
     if (filterCondition === "Diabetes" && !p.hasDiabetes) return false;
     if (filterCondition === "Obesidade" && !p.isObese) return false;
+    if (filterCondition === "Crianca2Anos" && !(p.isChildUnder2 || (p.age >= 0 && p.age <= 2))) return false;
 
     return true;
   });
@@ -355,9 +356,21 @@ export default function BuscaAtivaPage() {
             )}
 
             <select
+              value={filterCondition}
+              onChange={(e) => setFilterCondition(e.target.value)}
+              className="rounded-lg border border-zinc-300 bg-white px-2.5 py-1.5 text-xs text-zinc-800 shadow-2xs dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 cursor-pointer"
+            >
+              <option value="Todas">Todas as Condições</option>
+              <option value="Crianca2Anos">Crianças (0-2 anos)</option>
+              <option value="Hipertensão">Hipertensão (HAS)</option>
+              <option value="Diabetes">Diabetes (DM)</option>
+              <option value="Obesidade">Obesidade (OB)</option>
+            </select>
+
+            <select
               value={filterPriority}
               onChange={(e) => setFilterPriority(e.target.value)}
-              className="rounded-lg border border-zinc-300 bg-white px-2.5 py-1.5 text-xs text-zinc-800 shadow-2xs dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
+              className="rounded-lg border border-zinc-300 bg-white px-2.5 py-1.5 text-xs text-zinc-800 shadow-2xs dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 cursor-pointer"
             >
               <option value="Todas">Todas as Prioridades</option>
               <option value="Alta">Alta Prioridade</option>
@@ -434,7 +447,7 @@ export default function BuscaAtivaPage() {
                       )}
                     </td>
                     <td className="px-4 py-3 text-zinc-700 dark:text-zinc-300">
-                      {p.age} anos ({p.sex.substring(0, 1)})
+                      {p.age === 0 ? "< 1 ano" : p.age === 1 ? "1 ano" : `${p.age} anos`} ({p.sex.substring(0, 1)})
                     </td>
                     <td className="px-4 py-3 text-zinc-700 dark:text-zinc-300">
                       <div className="font-semibold">{p.microarea}</div>
@@ -442,6 +455,14 @@ export default function BuscaAtivaPage() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap gap-1">
+                        {(p.isChildUnder2 || (p.age >= 0 && p.age <= 2)) && (
+                          <span
+                            className="rounded bg-teal-100 px-1.5 py-0.5 text-[10px] font-bold text-teal-800 dark:bg-teal-950 dark:text-teal-300"
+                            title="Criança até 2 anos (Primeira Infância / Puericultura)"
+                          >
+                            0-2 ANOS
+                          </span>
+                        )}
                         {p.hasHypertension && <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-bold text-blue-800 dark:bg-blue-950 dark:text-blue-300">HAS</span>}
                         {p.hasDiabetes && <span className="rounded bg-purple-100 px-1.5 py-0.5 text-[10px] font-bold text-purple-800 dark:bg-purple-950 dark:text-purple-300">DM</span>}
                         {p.isObese && <span className="rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-bold text-red-800 dark:bg-red-950 dark:text-red-300">OB</span>}
