@@ -19,8 +19,9 @@ import {
   UserCheck,
 } from "lucide-react";
 import { UserRole } from "@/types/dcnt";
+import { isNavItemVisibleForRole } from "@/lib/utils/permissions";
 
-const navItems = [
+export const navItems = [
   { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
   { label: "Busca Ativa", href: "/busca-ativa", icon: Search },
   { label: "Território", href: "/territorio", icon: MapPin },
@@ -38,8 +39,13 @@ export function Sidebar({
   setIsOpenMobile: (open: boolean) => void;
 }) {
   const pathname = usePathname();
-  const { userProfile, logout } = useAuth();
+  const { userProfile, role, logout } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
+
+  const effectiveRole = role || userProfile?.role;
+  const visibleNavItems = navItems.filter((item) =>
+    isNavItemVisibleForRole(item.href, effectiveRole)
+  );
 
   return (
     <>
@@ -116,16 +122,9 @@ export function Sidebar({
 
         {/* Links de Navegação */}
         <nav className="flex-1 space-y-1 p-3 overflow-y-auto">
-          {navItems
-            .filter((item) => {
-              if (userProfile?.role === "ACS") {
-                if (item.href === "/configuracoes") return false;
-              }
-              return true;
-            })
-            .map((item) => {
-              const Icon = item.icon;
-              const isActive = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href));
+          {visibleNavItems.map((item) => {
+            const Icon = item.icon;
+            const isActive = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href));
 
             return (
               <Link

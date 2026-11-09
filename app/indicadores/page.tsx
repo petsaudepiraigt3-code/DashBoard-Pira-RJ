@@ -1,21 +1,31 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { AppLayout } from "@/components/layout/app-layout";
 import { CardIndicator } from "@/components/ui/card-indicator";
 import { LineChartSVG } from "@/components/ui/charts";
 import { getAllPatientsFromStore } from "@/lib/store/patients";
 import { Patient, PatientActionRecord } from "@/types/dcnt";
 import { useAuth } from "@/context/auth-context";
-import { Users, UserCheck, AlertTriangle, CheckCircle2, TrendingUp, BarChart, RefreshCw, Activity, Building2 } from "lucide-react";
+import { canAccessIndicadores } from "@/lib/utils/permissions";
+import { Users, UserCheck, AlertTriangle, CheckCircle2, TrendingUp, BarChart, RefreshCw, Activity, Building2, Lock } from "lucide-react";
 
 export default function IndicadoresPage() {
+  const router = useRouter();
   const { role, userUnitId, userProfile } = useAuth();
+
+  const effectiveRole = role || userProfile?.role;
+  const hasAccess = canAccessIndicadores(effectiveRole);
 
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(true);
 
   const loadData = async () => {
+    if (!hasAccess) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     const realData = await getAllPatientsFromStore({
       role,
@@ -29,8 +39,34 @@ export default function IndicadoresPage() {
   };
 
   useEffect(() => {
+    if (!hasAccess) {
+      router.push("/dashboard");
+      return;
+    }
     loadData();
-  }, [role, userUnitId, userProfile]);
+  }, [role, userUnitId, userProfile, hasAccess, router]);
+
+  if (!hasAccess) {
+    return (
+      <AppLayout pageTitle="Painel de Indicadores Institucionais DCNT">
+        <div className="flex flex-col items-center justify-center py-16 text-center space-y-4">
+          <div className="rounded-full bg-amber-100 p-4 text-amber-700 dark:bg-amber-950 dark:text-amber-300">
+            <Lock className="h-10 w-10" />
+          </div>
+          <h2 className="text-lg font-bold text-zinc-900 dark:text-zinc-100">Acesso Não Autorizado</h2>
+          <p className="max-w-md text-xs text-zinc-500">
+            O painel de indicadores é reservado a Gerentes de Unidade e Administradores.
+          </p>
+          <button
+            onClick={() => router.push("/dashboard")}
+            className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-bold text-white shadow-2xs hover:bg-blue-700 cursor-pointer"
+          >
+            Voltar ao Dashboard
+          </button>
+        </div>
+      </AppLayout>
+    );
+  }
 
   // 1. População sob Acompanhamento (total do escopo)
   const totalPacientes = patients.length;

@@ -359,3 +359,39 @@ test('children up to 2 years old are identified as risk and assigned Alta priori
   await h.close();
  }
 });
+
+test('ACS role cannot view indicators and settings tabs, while GERENTE and ADMIN can view indicators', async () => {
+ const h = await harness();
+ try {
+  const permissions = h.load('lib/utils/permissions.ts');
+  assert.equal(typeof permissions.isNavItemVisibleForRole, 'function');
+  assert.equal(typeof permissions.canAccessIndicadores, 'function');
+
+  // ACS role checks (both exact and case-insensitive)
+  assert.equal(permissions.canAccessIndicadores('ACS'), false);
+  assert.equal(permissions.canAccessIndicadores('acs'), false);
+  assert.equal(permissions.isNavItemVisibleForRole('/indicadores', 'ACS'), false);
+  assert.equal(permissions.isNavItemVisibleForRole('/indicadores', 'acs'), false);
+  assert.equal(permissions.isNavItemVisibleForRole('/configuracoes', 'ACS'), false);
+  assert.equal(permissions.isNavItemVisibleForRole('/configuracoes', 'acs'), false);
+  assert.equal(permissions.isNavItemVisibleForRole('/dashboard', 'ACS'), true);
+  assert.equal(permissions.isNavItemVisibleForRole('/busca-ativa', 'ACS'), true);
+  assert.equal(permissions.isNavItemVisibleForRole('/territorio', 'ACS'), true);
+  assert.equal(permissions.isNavItemVisibleForRole('/pacientes', 'ACS'), true);
+  assert.equal(permissions.isNavItemVisibleForRole('/importar', 'ACS'), true);
+
+  // GERENTE role checks
+  assert.equal(permissions.canAccessIndicadores('GERENTE'), true);
+  assert.equal(permissions.canAccessIndicadores('gerente'), true);
+  assert.equal(permissions.isNavItemVisibleForRole('/indicadores', 'GERENTE'), true);
+  assert.equal(permissions.isNavItemVisibleForRole('/configuracoes', 'GERENTE'), true);
+
+  // ADMIN role checks
+  assert.equal(permissions.canAccessIndicadores('ADMIN'), true);
+  assert.equal(permissions.canAccessIndicadores('admin'), true);
+  assert.equal(permissions.isNavItemVisibleForRole('/indicadores', 'ADMIN'), true);
+  assert.equal(permissions.isNavItemVisibleForRole('/configuracoes', 'ADMIN'), true);
+ } finally {
+  await h.close();
+ }
+});
