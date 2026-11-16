@@ -32,6 +32,7 @@ import { db } from "@/lib/store/documents";
 import { supabase } from "@/lib/supabase";
 import { doc, updateDoc, serverTimestamp } from "@/lib/store/documents";
 import { getImportHistoryFromStore } from "@/lib/store/imports";
+import { purgeAdminDataInStore, AdminPurgeTarget } from "@/lib/store/admin-maintenance";
 import {
   Settings,
   Users,
@@ -61,6 +62,7 @@ import {
   Phone,
   ArrowRightLeft,
   Trash2,
+  Database,
 } from "lucide-react";
 
 interface ReconciledUser extends UserProfileDoc {
@@ -73,7 +75,7 @@ export default function ConfiguracoesPage() {
   const router = useRouter();
   const { role, userUnitId, userUnitNome, userProfile } = useAuth();
 
-  const [activeTab, setActiveTab] = useState<"unidades" | "microareas" | "acs" | "usuarios" | "cargas" | "diagnostico" | "parametros">("microareas");
+  const [activeTab, setActiveTab] = useState<"unidades" | "microareas" | "acs" | "usuarios" | "cargas" | "diagnostico" | "parametros" | "manutencao">("microareas");
   const [params, setParams] = useState<DcntParameters>(DEFAULT_DCNT_PARAMETERS);
   const [isSavingParams, setIsSavingParams] = useState(false);
   const [paramsSavedMessage, setParamsSavedMessage] = useState<string | null>(null);
@@ -179,6 +181,56 @@ export default function ConfiguracoesPage() {
 
   const [editingMicroarea, setEditingMicroarea] = useState<MicroareaDoc | null>(null);
   const [selectedAcsForMicroarea, setSelectedAcsForMicroarea] = useState<string>("");
+
+  // Limpeza de Dados (Exclusivo ADMIN)
+  const [purgeModalTarget, setPurgeModalTarget] = useState<AdminPurgeTarget | null>(null);
+  const [purgeConfirmText, setPurgeConfirmText] = useState("");
+  const [isPurgingData, setIsPurgingData] = useState(false);
+  const [purgeError, setPurgeError] = useState<string | null>(null);
+  const [purgeFeedback, setPurgeFeedback] = useState<string | null>(null);
+
+  const openPurgeModal = (target: AdminPurgeTarget) => {
+    if ((role as string) !== "ADMIN") return;
+    setPurgeModalTarget(target);
+    setPurgeConfirmText("");
+    setPurgeError(null);
+  };
+
+  const handleConfirmPurge = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!purgeModalTarget || (role as string) !== "ADMIN") return;
+
+    const expectedPhrase = purgeModalTarget === "patients" ? "APAGAR PACIENTES" : "APAGAR CARGAS";
+    if (purgeConfirmText.trim().toUpperCase() !== expectedPhrase) {
+      setPurgeError(`Digite exatamente "${expectedPhrase}" para confirmar a exclusão.`);
+      return;
+    }
+
+    setIsPurgingData(true);
+    setPurgeError(null);
+    setPurgeFeedback(null);
+
+    try {
+      const result = await purgeAdminDataInStore(purgeModalTarget);
+      const successText =
+        purgeModalTarget === "patients"
+          ? `Todos os pacientes foram excluídos com sucesso (${result.deletedCount} registro(s) principal(is) removido(s)).`
+          : `Todo o histórico de cargas foi excluído com sucesso (${result.deletedCount} carga(s) removida(s)).`;
+
+      setPurgeFeedback(successText);
+      setPurgeModalTarget(null);
+      setPurgeConfirmText("");
+
+      await Promise.all([
+        fetchCargas(),
+        selectedUnitId ? fetchUnitData(selectedUnitId) : Promise.resolve(),
+      ]);
+    } catch (err: unknown) {
+      setPurgeError(err instanceof Error ? err.message : "Não foi possível concluir a limpeza dos dados.");
+    } finally {
+      setIsPurgingData(false);
+    }
+  };
 
   // Carregar Unidades
   const fetchUnits = async () => {
@@ -341,14 +393,16 @@ export default function ConfiguracoesPage() {
           alert("Aviso: A unidade foi criada, mas a senha do Gerente deve possuir no mínimo 8 caracteres.");
         } else {
           try {
-            await supabase.rpc("upsert_managed_user_account", {
+            const { data: rpcData, error: rpcErr } = await supabase.rpc("upsert_managed_user_account", {
               p_email: cleanGerenteEmail,
               p_password: newUnitForm.gerenteSenha,
               p_nome: newUnitForm.responsavelNome?.trim() || `Gerente ${newUnitForm.nome.trim()}`,
               p_perfil: "GERENTE",
               p_unidade_id: cleanCodigo,
-              p_ativo: true,
             });
+            if (rpcErr || !rpcData?.uid) {
+              throw rpcErr || new Error("RPC upsert_managed_user_account não retornou UID.");
+            }
           } catch {
             // Fallback para rota de API
             const idToken = (await supabase.auth.getSession()).data.session?.access_token || "";
@@ -484,13 +538,11 @@ export default function ConfiguracoesPage() {
             p_perfil: "ACS",
             p_unidade_id: activeUnit,
             p_telefone: newAcsForm.telefone || null,
-            p_microarea_ids: selectedMAs.length > 0 ? selectedMAs : null,
-            p_ativo: true,
           });
-          if (!rpcErr && rpcData?.success) {
+          if (!rpcErr && rpcData?.uid) {
             createdUid = rpcData.uid;
-          } else if (rpcErr) {
-            throw rpcErr;
+          } else {
+            throw rpcErr || new Error("RPC upsert_managed_user_account não retornou UID.");
           }
         } catch {
           // Fallback para rota de API
@@ -513,7 +565,7 @@ export default function ConfiguracoesPage() {
 
           const data = await res.json();
           if (!res.ok) throw new Error(data.error || "Erro ao criar conta de ACS.");
-          createdUid = data.user?.id || "";
+          createdUid = data.uid || data.user?.id || "";
         }
       } else {
         createdUid = await createAcsUser({
@@ -1008,10 +1060,27 @@ export default function ConfiguracoesPage() {
           <Sliders className="h-4 w-4" />
           <span>Parâmetros DCNT</span>
         </button>
+
+        {(role as string) === "ADMIN" && (
+          <button
+            onClick={() => {
+              setActiveTab("manutencao");
+              setPurgeFeedback(null);
+            }}
+            className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition-all cursor-pointer ${
+              activeTab === "manutencao"
+                ? "border-red-600 text-red-600 dark:border-red-500 dark:text-red-400"
+                : "border-transparent text-zinc-500 hover:text-red-700 dark:hover:text-red-400"
+            }`}
+          >
+            <Database className="h-4 w-4" />
+            <span>Limpeza de Dados (ADMIN)</span>
+          </button>
+        )}
       </div>
 
       {/* SELETOR DE UNIDADE ATIVA (ADMIN OU FIXO GERENTE) */}
-      {activeTab !== "unidades" && activeTab !== "usuarios" && activeTab !== "cargas" && (
+      {activeTab !== "unidades" && activeTab !== "usuarios" && activeTab !== "cargas" && activeTab !== "manutencao" && (
         <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-2xs dark:border-zinc-800 dark:bg-zinc-900 flex items-center justify-between my-4">
           <div className="flex items-center gap-2">
             <Building2 className="h-4 w-4 text-blue-600" />
@@ -1405,7 +1474,7 @@ export default function ConfiguracoesPage() {
       {/* ABA: CONTROLE DE CARGA */}
       {activeTab === "cargas" && (
         <div className="space-y-4 my-4">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <h2 className="text-sm font-bold text-zinc-900 dark:text-zinc-100">
                 Controle de Cargas e Histórico de Uploads (e-SUS APS)
@@ -1415,15 +1484,35 @@ export default function ConfiguracoesPage() {
               </p>
             </div>
 
-            <button
-              onClick={fetchCargas}
-              disabled={loadingCargas}
-              className="flex items-center gap-1.5 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs font-bold text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 cursor-pointer disabled:opacity-50"
-            >
-              {loadingCargas ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-              <span>Atualizar Histórico</span>
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={fetchCargas}
+                disabled={loadingCargas}
+                className="flex items-center gap-1.5 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs font-bold text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 cursor-pointer disabled:opacity-50"
+              >
+                {loadingCargas ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                <span>Atualizar Histórico</span>
+              </button>
+
+              {(role as string) === "ADMIN" && (
+                <button
+                  onClick={() => openPurgeModal("imports")}
+                  disabled={isPurgingData || loadingCargas || cargasHistory.length === 0}
+                  className="flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-bold text-white shadow-2xs hover:bg-red-700 cursor-pointer disabled:opacity-50"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  <span>Apagar Todo o Histórico</span>
+                </button>
+              )}
+            </div>
           </div>
+
+          {purgeFeedback && (
+            <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs font-bold text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-300">
+              <CheckCircle2 className="h-4 w-4 shrink-0" />
+              <span>{purgeFeedback}</span>
+            </div>
+          )}
 
           {loadingCargas ? (
             <div className="p-8 text-center text-xs text-zinc-500">Carregando histórico de cargas...</div>
@@ -1983,6 +2072,96 @@ export default function ConfiguracoesPage() {
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* ABA: LIMPEZA E MANUTENÇÃO DE DADOS (EXCLUSIVO ADMIN) */}
+      {activeTab === "manutencao" && (role as string) === "ADMIN" && (
+        <div className="space-y-4 my-4">
+          <div className="rounded-xl border border-red-200 bg-red-50/70 p-4 dark:border-red-900/60 dark:bg-red-950/30 flex items-start gap-3">
+            <ShieldAlert className="h-5 w-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+            <div>
+              <h2 className="text-sm font-bold text-red-900 dark:text-red-200">
+                Administração e Limpeza Global de Dados (Exclusivo ADMIN)
+              </h2>
+              <p className="text-xs text-red-800 dark:text-red-300 mt-0.5">
+                Estas ações afetam todas as Unidades de Saúde cadastradas no sistema e são irreversíveis. Unidades, microáreas, usuários e parâmetros clínicos DCNT não são removidos.
+              </p>
+            </div>
+          </div>
+
+          {purgeFeedback && (
+            <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs font-bold text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-300">
+              <CheckCircle2 className="h-4 w-4 shrink-0" />
+              <span>{purgeFeedback}</span>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Card 1: Apagar Todos os Pacientes */}
+            <div className="rounded-xl border border-red-200 bg-white p-5 shadow-2xs dark:border-red-900/40 dark:bg-zinc-900 flex flex-col justify-between space-y-4">
+              <div className="space-y-2">
+                <div className="flex items-center gap-2.5">
+                  <div className="rounded-lg bg-red-100 p-2 text-red-600 dark:bg-red-950 dark:text-red-400">
+                    <Users className="h-5 w-5" />
+                  </div>
+                  <h3 className="text-sm font-extrabold text-zinc-900 dark:text-zinc-100">
+                    Apagar Todos os Pacientes
+                  </h3>
+                </div>
+                <p className="text-xs text-zinc-600 dark:text-zinc-400 leading-relaxed">
+                  Remove permanentemente todos os pacientes cadastrados de todas as unidades de saúde, incluindo prontuários, medições de pressão arterial, antropometria, atendimentos, ações dos ACS e observações da gerência.
+                </p>
+                <p className="text-[11px] font-semibold text-zinc-500 dark:text-zinc-400">
+                  Preserva: Unidades de Saúde, Microáreas, Equipe de ACS/Usuários, Parâmetros DCNT e Histórico de Cargas.
+                </p>
+              </div>
+
+              <div className="pt-2 border-t border-zinc-100 dark:border-zinc-800 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => openPurgeModal("patients")}
+                  disabled={isPurgingData}
+                  className="flex items-center gap-1.5 rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white shadow-2xs hover:bg-red-700 cursor-pointer disabled:opacity-50"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  <span>Apagar Todos os Pacientes</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Card 2: Apagar Todo o Histórico de Cargas */}
+            <div className="rounded-xl border border-red-200 bg-white p-5 shadow-2xs dark:border-red-900/40 dark:bg-zinc-900 flex flex-col justify-between space-y-4">
+              <div className="space-y-2">
+                <div className="flex items-center gap-2.5">
+                  <div className="rounded-lg bg-red-100 p-2 text-red-600 dark:bg-red-950 dark:text-red-400">
+                    <FileSpreadsheet className="h-5 w-5" />
+                  </div>
+                  <h3 className="text-sm font-extrabold text-zinc-900 dark:text-zinc-100">
+                    Apagar Todo o Histórico de Cargas
+                  </h3>
+                </div>
+                <p className="text-xs text-zinc-600 dark:text-zinc-400 leading-relaxed">
+                  Remove permanentemente todos os registros de importações exibidos no Controle de Cargas e no Histórico de Importações do e-SUS APS ({cargasHistory.length} registro(s) recente(s)).
+                </p>
+                <p className="text-[11px] font-semibold text-zinc-500 dark:text-zinc-400">
+                  Preserva: Todos os pacientes cadastrados, suas medições clínicas, Unidades de Saúde, Microáreas e Usuários.
+                </p>
+              </div>
+
+              <div className="pt-2 border-t border-zinc-100 dark:border-zinc-800 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => openPurgeModal("imports")}
+                  disabled={isPurgingData}
+                  className="flex items-center gap-1.5 rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white shadow-2xs hover:bg-red-700 cursor-pointer disabled:opacity-50"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  <span>Apagar Todo o Histórico de Cargas</span>
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
@@ -2818,6 +2997,85 @@ export default function ConfiguracoesPage() {
                 >
                   {isCreatingUnit && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
                   <span>Salvar Área e Gerente</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: CONFIRMAÇÃO DE LIMPEZA GLOBAL (EXCLUSIVO ADMIN) */}
+      {purgeModalTarget && (role as string) === "ADMIN" && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl dark:bg-zinc-900 border border-red-200 dark:border-red-900/60 space-y-4">
+            <div className="flex items-center gap-3 text-red-700 dark:text-red-400">
+              <div className="rounded-full bg-red-100 p-2.5 dark:bg-red-950">
+                <AlertTriangle className="h-6 w-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-extrabold text-zinc-900 dark:text-zinc-100">
+                  {purgeModalTarget === "patients"
+                    ? "Apagar Todos os Pacientes"
+                    : "Apagar Todo o Histórico de Cargas"}
+                </h3>
+                <span className="text-[11px] font-bold uppercase tracking-wider text-red-600 dark:text-red-400">
+                  Ação Irreversível • Perfil ADMIN
+                </span>
+              </div>
+            </div>
+
+            <p className="text-xs text-zinc-700 dark:text-zinc-300 leading-relaxed">
+              {purgeModalTarget === "patients"
+                ? "Esta ação excluirá permanentemente todos os pacientes de todas as unidades de saúde, juntamente com seus históricos clínicos, aferições, atendimentos, ações e observações."
+                : "Esta ação excluirá permanentemente todos os registros do histórico de cargas e importações do e-SUS APS de todas as unidades de saúde."}
+            </p>
+
+            {purgeError && (
+              <div className="rounded-lg bg-red-50 p-3 text-xs font-semibold text-red-800 dark:bg-red-950/40 dark:text-red-300">
+                {purgeError}
+              </div>
+            )}
+
+            <form onSubmit={handleConfirmPurge} className="space-y-3 text-xs">
+              <div>
+                <label className="block font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                  Para confirmar, digite{" "}
+                  <code className="rounded bg-zinc-100 px-1.5 py-0.5 font-mono font-extrabold text-red-700 dark:bg-zinc-800 dark:text-red-300">
+                    {purgeModalTarget === "patients" ? "APAGAR PACIENTES" : "APAGAR CARGAS"}
+                  </code>
+                  :
+                </label>
+                <input
+                  type="text"
+                  value={purgeConfirmText}
+                  onChange={(e) => setPurgeConfirmText(e.target.value)}
+                  placeholder={purgeModalTarget === "patients" ? "APAGAR PACIENTES" : "APAGAR CARGAS"}
+                  className="w-full rounded-lg border border-zinc-300 p-2 font-mono font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                  autoFocus
+                  required
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setPurgeModalTarget(null)}
+                  disabled={isPurgingData}
+                  className="rounded-lg border border-zinc-300 px-3 py-1.5 font-semibold text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800 cursor-pointer disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={
+                    isPurgingData ||
+                    purgeConfirmText.trim().toUpperCase() !==
+                      (purgeModalTarget === "patients" ? "APAGAR PACIENTES" : "APAGAR CARGAS")
+                  }
+                  className="flex items-center gap-1.5 rounded-lg bg-red-600 px-4 py-1.5 font-bold text-white hover:bg-red-700 cursor-pointer disabled:opacity-50"
+                >
+                  {isPurgingData ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                  <span>Confirmar Exclusão Definitiva</span>
                 </button>
               </div>
             </form>

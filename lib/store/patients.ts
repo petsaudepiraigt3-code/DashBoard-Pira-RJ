@@ -16,7 +16,7 @@ import {
 import { NormalizedPatientRecord } from "../esus/types";
 import { MOCK_UNIT_NAME } from "@/data/mock-data";
 import { compareActionsChronological } from "@/lib/utils/returns";
-import { normalizeUnitId } from "@/lib/store/units";
+import { normalizeUnitId, buildUnitAliasMap, resolveCanonicalUnitId } from "@/lib/store/units";
 
 export interface StorePatientDoc {
   id: string;
@@ -163,6 +163,24 @@ export interface FetchPatientsOptions {
 export async function getAllPatientsFromStore(options?: FetchPatientsOptions): Promise<Patient[]> {
   const list: Patient[] = [];
   try {
+    // Mapeamento canônico de Unidades de Saúde (alinhado com normalize_unit_id do PostgreSQL)
+    const unitEntries: Array<{ id?: string; codigo?: string; nome?: string; nomeNormalizado?: string }> = [];
+    try {
+      const unitsSnap = await getDocs(collection(db, "unidades"));
+      unitsSnap.forEach((uDoc) => {
+        const uData = uDoc.data();
+        unitEntries.push({
+          id: uDoc.id,
+          codigo: uData.codigo,
+          nome: uData.nome,
+          nomeNormalizado: uData.nomeNormalizado,
+        });
+      });
+    } catch {
+      // Ignorar caso não haja leitura de unidades
+    }
+    const unitAliasMap = buildUnitAliasMap(unitEntries);
+
     // Mapeamento de Microárea -> ACS responsável a partir da coleção 'microareas'
     const microareaAcsMap = new Map<string, string>();
     try {
@@ -170,7 +188,7 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
       maSnap.forEach((mDoc) => {
         const mData = mDoc.data();
         if (mData.unidadeId && mData.codigo && mData.acsNome) {
-          const mUnit = normalizeUnitId(mData.unidadeId);
+          const mUnit = resolveCanonicalUnitId(mData.unidadeId, unitAliasMap);
           const cleanCode = (mData.codigo || "").replace(/\D/g, "").trim();
           const paddedCode = cleanCode ? cleanCode.padStart(2, "0") : "";
           if (cleanCode) microareaAcsMap.set(`${mUnit}_${cleanCode}`, mData.acsNome);
@@ -178,7 +196,7 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
           microareaAcsMap.set(`${mUnit}_${mData.codigo}`, mData.acsNome);
         }
       });
-    } catch (maErr) {
+    } catch {
       // Ignorar
     }
 
@@ -189,7 +207,7 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
         })
       : undefined;
 
-    const targetUnitId = options?.userUnitId ? normalizeUnitId(options.userUnitId) : null;
+    const targetUnitId = options?.userUnitId ? resolveCanonicalUnitId(options.userUnitId, unitAliasMap) : null;
     const isGerente = options?.role === "GERENTE";
     const isAcs = options?.role === "ACS";
 
@@ -205,7 +223,7 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
         dataUltimaConsulta?: string;
       };
 
-      const pUnitId = normalizeUnitId(data.unidadeId);
+      const pUnitId = resolveCanonicalUnitId(data.unidadeId, unitAliasMap);
       const pMicroarea = data.microarea || "Sem microárea";
       const rawDigits =
         (pMicroarea || "").replace(/\D/g, "").trim() ||
@@ -216,7 +234,7 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
       // O GERENTE deve visualizar 100% dos pacientes da sua unidade, sem qualquer restrição de microárea.
       // O ACS visualiza apenas os pacientes de suas microáreas atribuídas.
       if (isAcs) {
-        if (targetUnitId && pUnitId !== targetUnitId) {
+        if (targetUnitId && pUnitId.toUpperCase() !== targetUnitId.toUpperCase()) {
           return;
         }
         if (normalizedAssignedCodes !== undefined) {
@@ -229,7 +247,7 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
           }
         }
       } else if (isGerente) {
-        if (targetUnitId && pUnitId !== targetUnitId) {
+        if (targetUnitId && pUnitId.toUpperCase() !== targetUnitId.toUpperCase()) {
           return;
         }
       }
@@ -435,7 +453,7 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
       });
     });
   } catch (err) {
-    // Retorno de lista tratada
+    console.error("Erro ao buscar pacientes no Store:", err);
   }
   return list;
 }

@@ -12,7 +12,7 @@ import { MapPin, Users, UserCheck, AlertTriangle, ChevronRight, Activity, Heart,
 import { useAuth } from "@/context/auth-context";
 
 export default function TerritorioPage() {
-  const { role, userUnitId, userProfile } = useAuth();
+  const { role, userUnitId, userProfile, loading: authLoading } = useAuth();
 
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(false);
@@ -21,16 +21,17 @@ export default function TerritorioPage() {
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   const loadData = async () => {
+    if (authLoading || !userProfile) return;
     setLoading(true);
 
     try {
       const [realData, loadedParams] = await Promise.all([
         getAllPatientsFromStore({
-          role,
-          userUnitId,
-          assignedMicroareaCodes: userProfile?.assignedMicroareaCodes,
-          acsName: role === "ACS" ? userProfile?.name : undefined,
-          acsId: role === "ACS" ? userProfile?.uid : undefined,
+          role: userProfile.role || role,
+          userUnitId: userProfile.unitId || userUnitId,
+          assignedMicroareaCodes: userProfile.role === "ACS" ? userProfile.assignedMicroareaCodes : undefined,
+          acsName: userProfile.role === "ACS" ? userProfile.name : undefined,
+          acsId: userProfile.role === "ACS" ? userProfile.uid : undefined,
         }),
         getDcntParametersFromStore(),
       ]);
@@ -46,8 +47,9 @@ export default function TerritorioPage() {
   };
 
   useEffect(() => {
+    if (authLoading || !userProfile) return;
     loadData();
-  }, [role, userUnitId, userProfile]);
+  }, [authLoading, role, userUnitId, userProfile]);
 
   // Agregação dos dados reais por Microárea
   const microareaMap = new Map<string, {

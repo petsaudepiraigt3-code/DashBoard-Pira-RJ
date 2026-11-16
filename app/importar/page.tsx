@@ -11,6 +11,7 @@ import {
   FivePatientsTestResult,
 } from "@/lib/esus/importer";
 import { getImportHistoryFromStore } from "@/lib/store/imports";
+import { purgeAdminDataInStore } from "@/lib/store/admin-maintenance";
 import { getExistingPatientsMap } from "@/lib/store/patients";
 import { getDcntParametersFromStore } from "@/lib/store/parameters";
 import { getAllActiveUnitsFromStore, HealthUnit } from "@/lib/store/units";
@@ -89,6 +90,36 @@ export default function ImportarPage() {
   // Histórico de importações do Supabase
   const [history, setHistory] = useState<StoreImportRecord[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
+  const [showClearHistoryModal, setShowClearHistoryModal] = useState(false);
+  const [clearHistoryConfirmText, setClearHistoryConfirmText] = useState("");
+  const [isClearingHistory, setIsClearingHistory] = useState(false);
+  const [clearHistoryError, setClearHistoryError] = useState<string | null>(null);
+  const [clearHistorySuccess, setClearHistorySuccess] = useState<string | null>(null);
+
+  const handleConfirmClearHistory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (role !== "ADMIN") return;
+    if (clearHistoryConfirmText.trim().toUpperCase() !== "APAGAR CARGAS") {
+      setClearHistoryError('Digite exatamente "APAGAR CARGAS" para confirmar.');
+      return;
+    }
+
+    setIsClearingHistory(true);
+    setClearHistoryError(null);
+    setClearHistorySuccess(null);
+
+    try {
+      const result = await purgeAdminDataInStore("imports");
+      setShowClearHistoryModal(false);
+      setClearHistoryConfirmText("");
+      setClearHistorySuccess(`Todo o histórico de cargas foi removido (${result.deletedCount} carga(s)).`);
+      await fetchHistory();
+    } catch (err: unknown) {
+      setClearHistoryError(err instanceof Error ? err.message : "Erro ao apagar histórico de cargas.");
+    } finally {
+      setIsClearingHistory(false);
+    }
+  };
 
   // Carregar Unidades de Saúde ativas do Supabase
   const fetchUnits = async () => {
@@ -911,18 +942,42 @@ export default function ImportarPage() {
 
       {/* 5. HISTÓRICO REAL DE IMPORTAÇÕES DO SUPABASE */}
       <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-2xs dark:border-zinc-800 dark:bg-zinc-900 space-y-4 mt-6">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
           <h3 className="text-base font-bold text-zinc-900 dark:text-zinc-50 tracking-tight">
             Histórico de Importações do e-SUS APS
           </h3>
-          <button
-            onClick={fetchHistory}
-            className="flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
-          >
-            <RefreshCw className="h-3.5 w-3.5" />
-            <span>Atualizar Histórico</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={fetchHistory}
+              className="flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              <span>Atualizar Histórico</span>
+            </button>
+
+            {role === "ADMIN" && (
+              <button
+                onClick={() => {
+                  setClearHistoryConfirmText("");
+                  setClearHistoryError(null);
+                  setShowClearHistoryModal(true);
+                }}
+                disabled={loadingHistory || history.length === 0 || isClearingHistory}
+                className="flex items-center gap-1 rounded-lg bg-red-600 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-red-700 cursor-pointer disabled:opacity-50"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>Apagar Todo o Histórico</span>
+              </button>
+            )}
+          </div>
         </div>
+
+        {clearHistorySuccess && (
+          <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs font-bold text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-300">
+            <CheckCircle2 className="h-4 w-4 shrink-0" />
+            <span>{clearHistorySuccess}</span>
+          </div>
+        )}
 
         {loadingHistory ? (
           <div className="p-8 text-center text-xs text-zinc-400">Carregando histórico do Supabase...</div>
@@ -985,6 +1040,76 @@ export default function ImportarPage() {
           </div>
         )}
       </div>
+
+      {showClearHistoryModal && role === "ADMIN" && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl dark:bg-zinc-900 border border-red-200 dark:border-red-900/60 space-y-4">
+            <div className="flex items-center gap-3 text-red-700 dark:text-red-400">
+              <div className="rounded-full bg-red-100 p-2.5 dark:bg-red-950">
+                <AlertTriangle className="h-6 w-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-extrabold text-zinc-900 dark:text-zinc-100">
+                  Apagar Todo o Histórico de Cargas
+                </h3>
+                <span className="text-[11px] font-bold uppercase tracking-wider text-red-600 dark:text-red-400">
+                  Ação Irreversível • Perfil ADMIN
+                </span>
+              </div>
+            </div>
+
+            <p className="text-xs text-zinc-700 dark:text-zinc-300 leading-relaxed">
+              Esta ação removerá permanentemente todos os registros do histórico de cargas e importações do e-SUS APS. Os pacientes já cadastrados serão mantidos.
+            </p>
+
+            {clearHistoryError && (
+              <div className="rounded-lg bg-red-50 p-3 text-xs font-semibold text-red-800 dark:bg-red-950/40 dark:text-red-300">
+                {clearHistoryError}
+              </div>
+            )}
+
+            <form onSubmit={handleConfirmClearHistory} className="space-y-3 text-xs">
+              <div>
+                <label className="block font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                  Para confirmar, digite{" "}
+                  <code className="rounded bg-zinc-100 px-1.5 py-0.5 font-mono font-extrabold text-red-700 dark:bg-zinc-800 dark:text-red-300">
+                    APAGAR CARGAS
+                  </code>
+                  :
+                </label>
+                <input
+                  type="text"
+                  value={clearHistoryConfirmText}
+                  onChange={(e) => setClearHistoryConfirmText(e.target.value)}
+                  placeholder="APAGAR CARGAS"
+                  className="w-full rounded-lg border border-zinc-300 p-2 font-mono font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                  autoFocus
+                  required
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowClearHistoryModal(false)}
+                  disabled={isClearingHistory}
+                  className="rounded-lg border border-zinc-300 px-3 py-1.5 font-semibold text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800 cursor-pointer disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isClearingHistory || clearHistoryConfirmText.trim().toUpperCase() !== "APAGAR CARGAS"}
+                  className="flex items-center gap-1.5 rounded-lg bg-red-600 px-4 py-1.5 font-bold text-white hover:bg-red-700 cursor-pointer disabled:opacity-50"
+                >
+                  {isClearingHistory ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                  <span>Confirmar Exclusão Definitiva</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </AppLayout>
   );
 }

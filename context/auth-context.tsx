@@ -1,8 +1,9 @@
 "use client";
 import { createContext, useContext, useEffect, useState, useRef } from 'react';
 import type { User } from '@supabase/supabase-js';
-import { supabase } from '@/lib/supabase';
-import { db, doc, getDoc, getDocs, collection, query, where } from '@/lib/store/documents';
+import { supabase, isSupabaseConfigured } from '@/lib/supabase';
+import { db, doc, getDoc, getDocs, collection } from '@/lib/store/documents';
+import { buildUnitAliasMap, normalizeUnitId, resolveCanonicalUnitId } from '@/lib/store/units';
 
 export interface ExtendedUserProfile {
   uid: string;
@@ -50,21 +51,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (!user) {
         if (alive) {
           if (typeof window !== 'undefined') {
-            const devLogged = localStorage.getItem('dev_auth_logged');
-            if (devLogged) {
-              try {
-                const parsed = JSON.parse(devLogged) as ExtendedUserProfile;
-                if (parsed && parsed.uid && parsed.ativo) {
-                  setState({
-                    user: { id: parsed.uid, email: parsed.email, user_metadata: { nome: parsed.name } } as unknown as User,
-                    userProfile: parsed,
-                    loading: false,
-                    unauthorizedMessage: null,
-                  });
-                  return;
+            if (isSupabaseConfigured) {
+              localStorage.removeItem('dev_auth_logged');
+            } else {
+              const devLogged = localStorage.getItem('dev_auth_logged');
+              if (devLogged) {
+                try {
+                  const parsed = JSON.parse(devLogged) as ExtendedUserProfile;
+                  if (parsed && parsed.uid && parsed.ativo) {
+                    setState({
+                      user: { id: parsed.uid, email: parsed.email, user_metadata: { nome: parsed.name } } as unknown as User,
+                      userProfile: parsed,
+                      loading: false,
+                      unauthorizedMessage: null,
+                    });
+                    return;
+                  }
+                } catch {
+                  localStorage.removeItem('dev_auth_logged');
                 }
-              } catch {
-                localStorage.removeItem('dev_auth_logged');
               }
             }
           }
@@ -79,17 +84,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       try {
         let profile = await getDoc(doc(db, 'usuarios', user.id));
-        let p = profile.data();
+        let p = profile.exists() ? profile.data() : null;
 
         // Se o documento não estava em usuarios/<auth.uid()> ou estava sem unidadeId, reconciliar via RPC
-        if (!profile.exists() || (p.perfil !== 'ADMIN' && !p.unidadeId)) {
-          const { data: resolved } = await supabase.rpc('resolve_my_profile');
-          if (resolved && typeof resolved === 'object' && !Array.isArray(resolved)) {
-            p = resolved as Record<string, any>;
-          } else {
-            profile = await getDoc(doc(db, 'usuarios', user.id));
-            p = profile.data();
+        if (!p || !p.perfil || (p.perfil !== 'ADMIN' && !p.unidadeId)) {
+          try {
+            const { data: resolved } = await supabase.rpc('resolve_my_profile');
+            if (resolved && typeof resolved === 'object' && !Array.isArray(resolved)) {
+              p = resolved as Record<string, any>;
+            } else {
+              profile = await getDoc(doc(db, 'usuarios', user.id));
+              if (profile.exists()) p = profile.data();
+            }
+          } catch {
+            // Ignorar erro de RPC e tentar leitura direta por coleção abaixo
           }
+        }
+
+        if (!p || !p.perfil) {
+          const userDocs = await getDocs(collection(db, 'usuarios'));
+          const emailLower = (user.email || '').trim().toLowerCase();
+          const matchedDoc = userDocs.docs.find((d) => {
+            const dData = d.data();
+            return (
+              d.id === user.id ||
+              dData.uid === user.id ||
+              dData.authUid === user.id ||
+              (emailLower && String(dData.email || '').trim().toLowerCase() === emailLower)
+            );
+          });
+          if (matchedDoc) p = matchedDoc.data();
         }
 
         if (!p || !p.perfil || p.ativo === false || !['ADMIN', 'GERENTE', 'ACS'].includes(p.perfil)) {
@@ -97,24 +121,71 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
 
         const rawUnitId = String(p.unidadeId || '').trim();
-        const normalizedUnitId =
-          !rawUnitId || ['usf arrozal 3', 'arrozal', 'usf-003'].includes(rawUnitId.toLowerCase())
-            ? 'USF-003'
-            : rawUnitId;
-
+        const normalizedUnitId = normalizeUnitId(rawUnitId);
         const effectiveUnitId = p.perfil === 'ADMIN' ? (rawUnitId ? normalizedUnitId : 'USF-003') : normalizedUnitId;
-        const unit = effectiveUnitId ? await getDoc(doc(db, 'unidades', effectiveUnitId)) : null;
-        const canonicalUnitId = unit?.exists() && unit.data().codigo ? String(unit.data().codigo) : effectiveUnitId;
+
+        const unitEntries: Array<{ id?: string; codigo?: string; nome?: string; nomeNormalizado?: string }> = [];
+        let matchedUnitName: string | null = null;
+        try {
+          const allUnitsSnap = await getDocs(collection(db, 'unidades'));
+          allUnitsSnap.forEach((uDoc) => {
+            const uData = uDoc.data();
+            unitEntries.push({
+              id: uDoc.id,
+              codigo: uData.codigo,
+              nome: uData.nome,
+              nomeNormalizado: uData.nomeNormalizado,
+            });
+          });
+          const aliasMap = buildUnitAliasMap(unitEntries);
+          const resolvedId = resolveCanonicalUnitId(effectiveUnitId, aliasMap);
+          const matchedUnitDoc = allUnitsSnap.docs.find((uDoc) => {
+            const uData = uDoc.data();
+            const uCode = resolveCanonicalUnitId(uData.codigo || uDoc.id, aliasMap);
+            return uCode.toLowerCase() === resolvedId.toLowerCase();
+          });
+          if (matchedUnitDoc?.data()?.nome) {
+            matchedUnitName = String(matchedUnitDoc.data().nome);
+          }
+        } catch {
+          // Fallback para leitura pontual da unidade
+        }
+
+        const unitAliasMap = buildUnitAliasMap(unitEntries);
+        const canonicalUnitId = resolveCanonicalUnitId(effectiveUnitId, unitAliasMap);
+        if (!matchedUnitName && canonicalUnitId) {
+          const unit = await getDoc(doc(db, 'unidades', canonicalUnitId)).catch(() => null);
+          if (unit?.exists() && unit.data().nome) {
+            matchedUnitName = String(unit.data().nome);
+          }
+        }
 
         let assignedCodes: string[] = [];
         if (p.perfil === 'ACS') {
-          const areas = await getDocs(query(collection(db, 'microareas'), where('acsId', '==', user.id)));
+          const acsIdentifiers = new Set(
+            [user.id, p.uid, p.authUid]
+              .map((v) => String(v || '').trim())
+              .filter(Boolean)
+          );
+          const areas = await getDocs(collection(db, 'microareas'));
           const codeSet = new Set<string>();
           areas.docs.forEach((a) => {
-            if (a.data().ativo !== false && a.data().codigo) {
-              codeSet.add(String(a.data().codigo));
+            const mData = a.data();
+            if (mData.ativo === false) return;
+            const mAcsId = String(mData.acsId || '').trim();
+            if (mAcsId && acsIdentifiers.has(mAcsId) && mData.codigo) {
+              codeSet.add(String(mData.codigo));
             }
           });
+          if (codeSet.size === 0 && Array.isArray(p.microareaIds)) {
+            areas.docs.forEach((a) => {
+              const mData = a.data();
+              if (mData.ativo === false) return;
+              if (p.microareaIds.includes(a.id) || (mData.codigo && p.microareaIds.includes(mData.codigo))) {
+                if (mData.codigo) codeSet.add(String(mData.codigo));
+              }
+            });
+          }
           assignedCodes = Array.from(codeSet);
         }
 
@@ -129,7 +200,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               email: user.email || p.email || '',
               role: p.perfil,
               unitId: canonicalUnitId,
-              unitName: unit?.data().nome || (canonicalUnitId === 'USF-003' ? 'USF Arrozal 3' : canonicalUnitId),
+              unitName: matchedUnitName || (canonicalUnitId === 'USF-003' ? 'USF Arrozal 3' : canonicalUnitId),
               assignedMicroareaCodes: assignedCodes,
               ativo: true,
             },
@@ -162,6 +233,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const loginWithDevCredentials = async (emailInput: string, passwordInput: string): Promise<{ success: boolean; error?: string }> => {
+    if (isSupabaseConfigured) {
+      return { success: false, error: 'Use uma conta autenticada no Supabase Auth.' };
+    }
     const cleanEmail = (emailInput || '').trim().toLowerCase();
     const cleanPassword = (passwordInput || '').trim();
 

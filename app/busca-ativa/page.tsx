@@ -61,7 +61,7 @@ export default function BuscaAtivaPage() {
   useEffect(() => {
     if (authLoading || !userProfile) return;
     loadData();
-  }, [authLoading, userProfile?.role, userProfile?.unitId, userProfile?.uid]);
+  }, [authLoading, userProfile?.role, userProfile?.unitId, userProfile?.uid, userProfile?.assignedMicroareaCodes?.join(",")]);
 
   useEffect(() => {
     setFilterACS("Todos");
@@ -92,7 +92,7 @@ export default function BuscaAtivaPage() {
   const availableACSList = Array.from(
     new Set(
       patients
-        .filter((p) => role !== "GERENTE" || !normUnitId || normalizeUnitId((p as any).unidadeId) === normUnitId)
+        .filter((p) => role !== "GERENTE" || !normUnitId || normalizeUnitId((p as any).unidadeId).toUpperCase() === normUnitId.toUpperCase())
         .map((p) => p.acsName)
     )
   ).filter(Boolean).sort();
@@ -100,7 +100,7 @@ export default function BuscaAtivaPage() {
   const availableMicroareasList = Array.from(
     new Set(
       patients
-        .filter((p) => role !== "GERENTE" || !normUnitId || normalizeUnitId((p as any).unidadeId) === normUnitId)
+        .filter((p) => role !== "GERENTE" || !normUnitId || normalizeUnitId((p as any).unidadeId).toUpperCase() === normUnitId.toUpperCase())
         .map((p) => p.microarea)
     )
   ).filter(Boolean).sort();
@@ -109,10 +109,10 @@ export default function BuscaAtivaPage() {
   const filteredPatients = patients.filter((p) => {
     const pUnitId = normalizeUnitId((p as any).unidadeId);
     if (role === "GERENTE" && normUnitId) {
-      if (pUnitId !== normUnitId) return false;
+      if (pUnitId.toUpperCase() !== normUnitId.toUpperCase()) return false;
     }
     if (role === "ACS") {
-      if (normUnitId && pUnitId !== normUnitId) return false;
+      if (normUnitId && pUnitId.toUpperCase() !== normUnitId.toUpperCase()) return false;
       const acsCodes = (userProfile?.assignedMicroareaCodes || []).map((c) => {
         const d = String(c || "").replace(/\D/g, "").trim();
         return d ? d.padStart(2, "0") : String(c || "").trim();

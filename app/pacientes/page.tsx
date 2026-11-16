@@ -107,7 +107,7 @@ function PacientesContent() {
   useEffect(() => {
     if (authLoading || !userProfile) return;
     loadData();
-  }, [authLoading, userProfile?.role, userProfile?.unitId, userProfile?.uid]);
+  }, [authLoading, userProfile?.role, userProfile?.unitId, userProfile?.uid, userProfile?.assignedMicroareaCodes?.join(",")]);
 
   useEffect(() => {
     if (role === "ACS" || role === "GERENTE" || role === "ADMIN") {
@@ -127,7 +127,7 @@ function PacientesContent() {
   const availableACSList = Array.from(
     new Set(
       patients
-        .filter((p) => role !== "GERENTE" || !normUnitId || normalizeUnitId((p as any).unidadeId) === normUnitId)
+        .filter((p) => role !== "GERENTE" || !normUnitId || normalizeUnitId((p as any).unidadeId).toUpperCase() === normUnitId.toUpperCase())
         .map((p) => p.acsName)
     )
   ).filter(Boolean).sort();
@@ -135,7 +135,7 @@ function PacientesContent() {
   const availableMicroareasList = Array.from(
     new Set(
       patients
-        .filter((p) => role !== "GERENTE" || !normUnitId || normalizeUnitId((p as any).unidadeId) === normUnitId)
+        .filter((p) => role !== "GERENTE" || !normUnitId || normalizeUnitId((p as any).unidadeId).toUpperCase() === normUnitId.toUpperCase())
         .map((p) => p.microarea)
     )
   ).filter(Boolean).sort();
@@ -143,10 +143,10 @@ function PacientesContent() {
   const filteredPatients = patients.filter((p) => {
     const pUnitId = normalizeUnitId((p as any).unidadeId);
     if (role === "GERENTE" && normUnitId) {
-      if (pUnitId !== normUnitId) return false;
+      if (pUnitId.toUpperCase() !== normUnitId.toUpperCase()) return false;
     }
     if (role === "ACS") {
-      if (normUnitId && pUnitId !== normUnitId) return false;
+      if (normUnitId && pUnitId.toUpperCase() !== normUnitId.toUpperCase()) return false;
       const rawDigits = (p.microarea || "").replace(/\D/g, "").trim() || ((p as any).microareaCodigo || "").replace(/\D/g, "").trim();
       const patMACode = rawDigits ? rawDigits.padStart(2, "0") : ((p as any).microareaCodigo || "");
       if (normalizedAcsCodes.length === 0 || (!normalizedAcsCodes.includes(patMACode) && !(rawDigits && normalizedAcsCodes.includes(rawDigits)))) {

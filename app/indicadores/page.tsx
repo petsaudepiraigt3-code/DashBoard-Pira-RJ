@@ -13,38 +13,40 @@ import { Users, UserCheck, AlertTriangle, CheckCircle2, TrendingUp, BarChart, Re
 
 export default function IndicadoresPage() {
   const router = useRouter();
-  const { role, userUnitId, userProfile } = useAuth();
+  const { role, userUnitId, userProfile, loading: authLoading } = useAuth();
 
-  const effectiveRole = role || userProfile?.role;
+  const effectiveRole = userProfile?.role || role;
   const hasAccess = canAccessIndicadores(effectiveRole);
 
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(true);
 
   const loadData = async () => {
+    if (authLoading || !userProfile) return;
     if (!hasAccess) {
       setLoading(false);
       return;
     }
     setLoading(true);
     const realData = await getAllPatientsFromStore({
-      role,
-      userUnitId,
-      assignedMicroareaCodes: userProfile?.assignedMicroareaCodes,
-      acsName: role === "ACS" ? userProfile?.name : undefined,
-      acsId: role === "ACS" ? userProfile?.uid : undefined,
+      role: userProfile.role || role,
+      userUnitId: userProfile.unitId || userUnitId,
+      assignedMicroareaCodes: userProfile.role === "ACS" ? userProfile.assignedMicroareaCodes : undefined,
+      acsName: userProfile.role === "ACS" ? userProfile.name : undefined,
+      acsId: userProfile.role === "ACS" ? userProfile.uid : undefined,
     });
     setPatients(realData || []);
     setLoading(false);
   };
 
   useEffect(() => {
+    if (authLoading || !userProfile) return;
     if (!hasAccess) {
       router.push("/dashboard");
       return;
     }
     loadData();
-  }, [role, userUnitId, userProfile, hasAccess, router]);
+  }, [authLoading, role, userUnitId, userProfile, hasAccess, router]);
 
   if (!hasAccess) {
     return (

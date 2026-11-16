@@ -47,6 +47,34 @@ export function normalizeUnitId(unitId?: string | null): string {
   return clean;
 }
 
+export function buildUnitAliasMap(
+  unitEntries: Array<{ id?: string; codigo?: string; nome?: string; nomeNormalizado?: string }>
+): Map<string, string> {
+  const aliasMap = new Map<string, string>();
+  for (const entry of unitEntries) {
+    const canonical = normalizeUnitId(entry.codigo || entry.id || "");
+    if (!canonical) continue;
+    const keys = [entry.id, entry.codigo, entry.nome, entry.nomeNormalizado, canonical]
+      .map((k) => String(k || "").trim().toLowerCase())
+      .filter(Boolean);
+    for (const key of keys) {
+      if (!aliasMap.has(key)) aliasMap.set(key, canonical);
+    }
+  }
+  return aliasMap;
+}
+
+export function resolveCanonicalUnitId(unitId?: string | null, aliasMap?: Map<string, string>): string {
+  const normalized = normalizeUnitId(unitId);
+  if (aliasMap) {
+    const rawKey = String(unitId || "").trim().toLowerCase();
+    const normKey = normalized.toLowerCase();
+    const mapped = (rawKey && aliasMap.get(rawKey)) || aliasMap.get(normKey);
+    if (mapped) return mapped;
+  }
+  return normalized;
+}
+
 export type TipoMicroarea = "NORMAL" | "FORA_AREA" | "NAO_INFORMADA";
 
 export interface MicroareaDoc {
@@ -83,7 +111,9 @@ export type AuditLogType =
   | "ACS_DESATIVADO"
   | "MICROAREA_ATRIBUIDA"
   | "MICROAREA_TRANSFERIDA"
-  | "MICROAREA_DESVINCULADA";
+  | "MICROAREA_DESVINCULADA"
+  | "PACIENTES_EXCLUIDOS_ADMIN"
+  | "HISTORICO_CARGAS_EXCLUIDO_ADMIN";
 
 export interface AuditLogDoc {
   id?: string;
@@ -115,7 +145,7 @@ export async function getAllActiveUnitsFromStore(): Promise<HealthUnit[]> {
 
   rows.docs.forEach((row) => {
     const data = row.data() as Partial<HealthUnit>;
-    const rawId = row.id || data.id || data.codigo || "";
+    const rawId = data.codigo || row.id || data.id || "";
     const normId = normalizeUnitId(rawId);
     const unit: HealthUnit = {
       id: normId,

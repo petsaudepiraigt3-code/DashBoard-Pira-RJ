@@ -395,3 +395,79 @@ test('ACS role cannot view indicators and settings tabs, while GERENTE and ADMIN
   await h.close();
  }
 });
+
+test('GERENTE and ACS resolve unit aliases and casing consistently with PostgreSQL normalize_unit_id', async () => {
+ const h = await harness();
+ try {
+  const units = h.load('lib/store/units.ts');
+  const patientsStore = h.load('lib/store/patients.ts');
+  const documents = h.load('lib/store/documents.ts');
+
+  await h.as('admin');
+  await h.seed('unidades/unidade-centro-legacy', {
+   id: 'unidade-centro-legacy',
+   codigo: 'USF-001',
+   nome: 'USF Centro',
+   nomeNormalizado: 'USF CENTRO',
+   ativo: true,
+  });
+  await h.seed('microareas/ma_USF-001_05', {
+   id: 'ma_USF-001_05',
+   unidadeId: 'USF-001',
+   codigo: '05',
+   nome: 'Microárea 05',
+   acsId: h.ids.acs,
+   acsNome: 'ACS Centro',
+   ativo: true,
+  });
+  await documents.setDoc(documents.doc(documents.db, 'usuarios', h.ids.manager), {
+   uid: h.ids.manager,
+   nome: 'Gerente Centro',
+   email: 'manager@example.com',
+   perfil: 'GERENTE',
+   unidadeId: 'USF-001',
+   ativo: true,
+  });
+  await documents.setDoc(documents.doc(documents.db, 'usuarios', h.ids.acs), {
+   uid: h.ids.acs,
+   nome: 'ACS Centro',
+   email: 'acs@example.com',
+   perfil: 'ACS',
+   unidadeId: 'USF-001',
+   ativo: true,
+  });
+  // Patient stored with lowercase/name/legacy unit alias instead of exact 'USF-001'
+  await h.seed('pacientes/p-alias-1', {
+   nome: 'Paciente Alias Nome',
+   unidadeId: 'USF Centro',
+   microarea: 'Microárea 05',
+   microareaCodigo: '05',
+   prioridade: 'Alta',
+  });
+  await h.seed('pacientes/p-alias-2', {
+   nome: 'Paciente Alias Lowercase',
+   unidadeId: 'usf-001',
+   microarea: 'Microárea 05',
+   microareaCodigo: '05',
+   prioridade: 'Média',
+  });
+
+  // getAllActiveUnitsFromStore prefers canonical codigo
+  const activeUnits = await units.getAllActiveUnitsFromStore();
+  assert.ok(activeUnits.some((u) => u.id === 'USF-001' && u.codigo === 'USF-001'));
+
+  await h.as('manager');
+  const mgrPatients = await patientsStore.getAllPatientsFromStore({ role: 'GERENTE', userUnitId: 'USF-001' });
+  assert.equal(mgrPatients.length, 2);
+
+  await h.as('acs');
+  const acsPatients = await patientsStore.getAllPatientsFromStore({
+   role: 'ACS',
+   userUnitId: 'USF-001',
+   assignedMicroareaCodes: ['05'],
+  });
+  assert.equal(acsPatients.length, 2);
+ } finally {
+  await h.close();
+ }
+});

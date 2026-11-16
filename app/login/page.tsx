@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useAuth } from "@/context/auth-context";
 import { db } from "@/lib/store/documents";
 import { supabase, isSupabaseConfigured } from "@/lib/supabase";
-import { doc, getDoc } from "@/lib/store/documents";
+import { doc, getDoc, getDocs, collection } from "@/lib/store/documents";
 import { useRouter } from "next/navigation";
 import { HeartPulse, Lock, Mail, AlertCircle, Loader2 } from "lucide-react";
 
@@ -25,7 +25,7 @@ export default function LoginPage() {
     const cleanEmail = email.trim().toLowerCase();
     const cleanPassword = password.trim();
 
-    // 1. Tentar autenticar no Supabase Auth primeiro (gera sessão JWT real para o RLS do banco)
+    // 1. Autenticar no Supabase Auth (gera sessão JWT real para o RLS do banco)
     if (isSupabaseConfigured) {
       try {
         if (typeof window !== 'undefined') {
@@ -35,56 +35,69 @@ export default function LoginPage() {
           email: cleanEmail,
           password: cleanPassword,
         });
-        if (!authError && data.user) {
-          let profile = await getDoc(doc(db, 'usuarios', data.user.id));
-          let p = profile.data();
-          if (
-            !profile.exists() ||
-            !['ADMIN', 'GERENTE', 'ACS'].includes(p?.perfil) ||
-            (p?.perfil !== 'ADMIN' && !p?.unidadeId)
-          ) {
-            try {
-              const { data: resolvedProfile } = await supabase.rpc('resolve_my_profile');
-              if (resolvedProfile && typeof resolvedProfile === 'object') {
-                p = resolvedProfile as Record<string, any>;
-              } else {
-                profile = await getDoc(doc(db, 'usuarios', data.user.id));
-                p = profile.data();
-              }
-            } catch {
-              // Ignorar falha de RPC caso ainda não tenha sido aplicada no banco
-            }
-          }
-          if (
-            p &&
-            p.ativo !== false &&
-            ['ADMIN', 'GERENTE', 'ACS'].includes(p.perfil) &&
-            (p.perfil === 'ADMIN' || p.unidadeId)
-          ) {
-            router.replace('/dashboard');
-            return;
-          }
-          await supabase.auth.signOut();
+        if (authError || !data.user) {
+          setError(
+            authError?.message?.toLowerCase().includes('invalid')
+              ? 'E-mail ou senha inválidos no Supabase Auth. Se for uma conta recém-criada ou de teste, verifique o cadastro em Configurações > Usuários.'
+              : authError?.message || 'E-mail ou senha inválidos.'
+          );
+          setLoading(false);
+          return;
         }
+
+        let profile = await getDoc(doc(db, 'usuarios', data.user.id));
+        let p = profile.exists() ? profile.data() : null;
+        if (!p || !['ADMIN', 'GERENTE', 'ACS'].includes(p.perfil) || (p.perfil !== 'ADMIN' && !p.unidadeId)) {
+          try {
+            const { data: resolvedProfile } = await supabase.rpc('resolve_my_profile');
+            if (resolvedProfile && typeof resolvedProfile === 'object' && !Array.isArray(resolvedProfile)) {
+              p = resolvedProfile as Record<string, any>;
+            } else {
+              profile = await getDoc(doc(db, 'usuarios', data.user.id));
+              if (profile.exists()) p = profile.data();
+            }
+          } catch {
+            // Ignorar falha de RPC e tentar leitura direta por coleção abaixo
+          }
+        }
+        if (!p || !p.perfil) {
+          const userDocs = await getDocs(collection(db, 'usuarios'));
+          const matchedDoc = userDocs.docs.find((d) => {
+            const dData = d.data();
+            return (
+              d.id === data.user.id ||
+              dData.uid === data.user.id ||
+              dData.authUid === data.user.id ||
+              String(dData.email || '').trim().toLowerCase() === cleanEmail
+            );
+          });
+          if (matchedDoc) p = matchedDoc.data();
+        }
+        if (p && p.ativo !== false && ['ADMIN', 'GERENTE', 'ACS'].includes(p.perfil)) {
+          router.replace('/dashboard');
+          return;
+        }
+
+        await supabase.auth.signOut();
+        setError('Perfil de acesso inativo ou não encontrado no banco de dados. Contate o Administrador.');
+        setLoading(false);
+        return;
       } catch {
         await supabase.auth.signOut().catch(() => {});
+        setError('Não foi possível validar o acesso no Supabase. Verifique sua conexão e tente novamente.');
+        setLoading(false);
+        return;
       }
     }
 
-    // 2. Fallback para credenciais rápidas de teste (caso o SQL de contas ainda não tenha sido rodado)
+    // 2. Fallback para credenciais de desenvolvimento apenas quando o Supabase não está configurado
     const devResult = await loginWithDevCredentials(cleanEmail, cleanPassword);
     if (devResult.success) {
       router.replace('/dashboard');
       return;
     }
 
-    if (!isSupabaseConfigured) {
-      setError('Configure a conexão com o Supabase no ambiente do sistema.');
-      setLoading(false);
-      return;
-    }
-
-    setError('E-mail ou senha inválidos.');
+    setError('Configure a conexão com o Supabase no ambiente do sistema.');
     setLoading(false);
   };
 
