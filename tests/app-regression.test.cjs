@@ -483,3 +483,59 @@ test('GERENTE and ACS resolve unit aliases and casing consistently with PostgreS
   await h.close();
  }
 });
+
+test('e-SUS care dates (Última Consulta and Última Visita ACS) use the report reference date (03/11/2026) instead of upload date', async () => {
+ const h = await harness();
+ try {
+  await h.as('manager');
+  const mappers = h.load('lib/esus/mappers.ts');
+  const validator = h.load('lib/esus/validator.ts');
+  const importer = h.load('lib/esus/importer.ts');
+  const patientsStore = h.load('lib/store/patients.ts');
+  const formatters = h.load('lib/utils/formatters.ts');
+
+  const headers = [
+   'Nome','Data de nascimento','Idade','Sexo','Identidade de gênero','Raça/cor',
+   'Beneficiário do programa Bolsa Família','Vigência do programa Bolsa Família','CPF','CNS',
+   'Telefone celular','Telefone residencial','Telefone de contato','Microárea','Rua','Número',
+   'Complemento','Bairro','Município','UF','CEP','Dias desde o último atendimento médico',
+   'Meses desde o último atendimento médico','Dias desde o último atendimento de enfermagem',
+   'Meses desde o último atendimento de enfermagem','Dias desde o último atendimento odontológico',
+   'Meses desde o último atendimento odontológico','Dias desde a última visita domiciliar',
+   'Meses desde a última visita domiciliar','Última medição de peso','Última medição de altura',
+   'Data da última medição de peso e altura','Última medição de pressão arterial','Data da última medição de pressão arterial'
+  ];
+  const values = [
+   'CARLOS JOSE DE PAULA','08/09/1984','42 anos e 1 mês e 26 dias','Masculino','-','PRETA',
+   'Não','-','-','206105067780003','(24) 99850-3085','-','-','56','Seis - loteamento fraternidade','67',
+   'CASA','ARROZAL','Piraí','RJ','27185-000','27','2','-','-','-','-','20','0','64,70','156,00','12/05/2026','160/80','12/05/2026'
+  ];
+  const rawRow = Object.fromEntries(headers.map((k, i) => [k, values[i]]));
+  const { mappedColumns, unrecognizedColumns } = mappers.mapHeaders(headers);
+
+  // Even without reportReferenceDate explicitly passed, inferReportDateFromBirthAndAge infers 2026-11-03 from 08/09/1984 + 42y 1m 26d
+  const parsed = validator.validateAndNormalizeESUSData(
+   { headerRowIndex: 1, headersFound: headers, mappedColumns, unrecognizedColumns, rawRows: [rawRow] },
+   new Map()
+  );
+
+  assert.equal(parsed.reportReferenceDate, '2026-11-03');
+  const norm = parsed.rows[0].normalizedData;
+  assert.equal(norm.lastMedicalCare, '2026-10-07'); // 03/11/2026 - 27 dias = 07/10/2026
+  assert.equal(norm.lastHomeVisit, '2026-10-14');   // 03/11/2026 - 20 dias = 14/10/2026
+  assert.equal(norm.dataPA, '2026-05-12');
+  assert.equal(norm.dataMedicao, '2026-05-12');
+  assert.equal(norm.imc, 26.59);
+
+  await importer.executeESUSImportToStore(parsed, 'arrozal_03_11_2026.csv', '2 KB', 'manager', 'u1', 'Unidade', undefined, 'GERENTE', 'u1');
+  const savedPatients = await patientsStore.getAllPatientsFromStore({ role: 'GERENTE', userUnitId: 'u1' });
+  const carlos = savedPatients.find((p) => p.name === 'CARLOS JOSE DE PAULA');
+  assert.ok(carlos);
+  assert.equal(formatters.formatDateBR(carlos.lastMedicalApptDate), '07/10/2026');
+  assert.equal(formatters.formatDateBR(carlos.lastVisitDate), '14/10/2026');
+  assert.equal(formatters.formatDateBR(carlos.lastPA.date), '12/05/2026');
+  assert.equal(formatters.formatDateBR(carlos.lastWeight.date), '12/05/2026');
+ } finally {
+  await h.close();
+ }
+});

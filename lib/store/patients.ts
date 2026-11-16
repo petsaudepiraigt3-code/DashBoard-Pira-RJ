@@ -71,6 +71,7 @@ export interface StorePatientDoc {
   dataUltimaConsulta?: string | null;
   dataUltimoAtendimentoEnfermagem?: string | null;
   dataUltimoAtendimentoOdontologico?: string | null;
+  dataReferenciaCarga?: string | null;
 
   prioridade: "Alta" | "Média" | "Atenção" | "Acompanhado";
   motivosPrioridade: string | null;
@@ -99,7 +100,9 @@ export function computeConsolidatedLastVisitDate(data: {
   dataUltimaVisita?: string | null;
   daysSinceHomeVisit?: number | null;
   monthsSinceHomeVisit?: number | null;
+  dataReferenciaCarga?: string | null;
   historicoAcoes?: PatientActionRecord[];
+  historicoCargas?: PatientCargaSnapshot[];
 }): string {
   const rawHistorico: PatientActionRecord[] = data.historicoAcoes || [];
   const lastVisitaDomiciliar = rawHistorico.find((act) => act.tipoAcao === "Visita Domiciliar");
@@ -108,13 +111,20 @@ export function computeConsolidatedLastVisitDate(data: {
   let esusVisitDate: string | null = data.dataUltimaVisitaACS || data.dataUltimaVisita || null;
 
   if (!esusVisitDate) {
-    if (data.daysSinceHomeVisit != null && data.daysSinceHomeVisit >= 0) {
-      const refDate = new Date();
-      refDate.setDate(refDate.getDate() - data.daysSinceHomeVisit);
+    const baseIso =
+      data.dataReferenciaCarga ||
+      data.historicoCargas?.[0]?.dataReferencia ||
+      data.historicoCargas?.[0]?.dataCarga?.substring(0, 10) ||
+      new Date().toISOString().substring(0, 10);
+    const [y, m, d] = baseIso.substring(0, 10).split("-").map(Number);
+
+    if (data.daysSinceHomeVisit != null && data.daysSinceHomeVisit >= 0 && !isNaN(y)) {
+      const refDate = new Date(Date.UTC(y, m - 1, d));
+      refDate.setUTCDate(refDate.getUTCDate() - data.daysSinceHomeVisit);
       esusVisitDate = refDate.toISOString().substring(0, 10);
-    } else if (data.monthsSinceHomeVisit != null && data.monthsSinceHomeVisit >= 0) {
-      const refDate = new Date();
-      refDate.setDate(refDate.getDate() - data.monthsSinceHomeVisit * 30);
+    } else if (data.monthsSinceHomeVisit != null && data.monthsSinceHomeVisit >= 0 && !isNaN(y)) {
+      const refDate = new Date(Date.UTC(y, m - 1, d));
+      refDate.setUTCDate(refDate.getUTCDate() - data.monthsSinceHomeVisit * 30);
       esusVisitDate = refDate.toISOString().substring(0, 10);
     }
   }

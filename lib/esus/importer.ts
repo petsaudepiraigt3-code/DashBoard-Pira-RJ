@@ -181,11 +181,12 @@ export function createSnapshotRecord(
   tipoImportacao: "COMPLETA" | "TESTE",
   userName: string,
   norm: NormalizedPatientRecord,
-  previousData?: any
+  previousData?: any,
+  reportReferenceDate?: string
 ): PatientCargaSnapshot {
   const comparativo = calculateSnapshotComparison(norm, previousData);
   const now = new Date().toISOString();
-  const dateKey = norm.dataPA || norm.dataMedicao || norm.lastHomeVisit || now.substring(0, 10);
+  const dateKey = reportReferenceDate || norm.dataPA || norm.dataMedicao || norm.lastHomeVisit || now.substring(0, 10);
   const snapId = `snap_${importId}_${dateKey}_${Math.random().toString(36).substring(2, 7)}`;
 
   return {
@@ -611,13 +612,22 @@ export async function executeESUSImportToStore(
 
     const patientRef = doc(db, "pacientes", patientDocId);
 
-    const snapshot = createSnapshotRecord(importId, fileName, "COMPLETA", userName, norm, existingPatient);
+    const snapshot = createSnapshotRecord(
+      importId,
+      fileName,
+      "COMPLETA",
+      userName,
+      norm,
+      existingPatient,
+      parseResult.reportReferenceDate
+    );
     const existingCargas = (existingPatient as any)?.historicoCargas || [];
     const updatedHistoricoCargas = [snapshot, ...existingCargas].slice(0, 20);
 
     const existingAny = existingPatient as any;
     const patientData = {
       nome: norm.nome,
+      dataReferenciaCarga: parseResult.reportReferenceDate || null,
       cpf: norm.cpf || null,
       cns: norm.cns || null,
       dataNascimento: norm.dataNascimento || null,

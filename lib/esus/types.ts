@@ -159,6 +159,7 @@ export interface ESUSWarningBreakdown {
 
 export interface ESUSParseResult {
   headerRowIndex: number;
+  reportReferenceDate?: string; // Data de referência da geração do relatório e-SUS APS (YYYY-MM-DD)
   headersFound: string[];
   mappedColumns: { [key: string]: string }; // columnaOriginal -> campoInterno
   unrecognizedColumns: string[];

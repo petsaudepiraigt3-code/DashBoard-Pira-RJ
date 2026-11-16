@@ -21,6 +21,7 @@ import {
   cleanESUSString,
   parseBooleanESUS,
   parseESUSAge,
+  inferReportDateFromBirthAndAge,
 } from "./normalizer";
 import { calculateAdminPriorityScore, monthsSinceDate } from "@/lib/utils/priority";
 import { DcntParameters } from "@/types/dcnt";
@@ -34,31 +35,80 @@ function parseESUSInt(val?: string | number | null): number | undefined {
   return isNaN(parsed) || parsed < 0 ? undefined : parsed;
 }
 
-function deriveCareDate(
+export function deriveCareDate(
   explicitDateStr?: string,
   daysSince?: number,
-  monthsSince?: number
+  monthsSince?: number,
+  referenceDateIso?: string
 ): string | undefined {
   const iso = parseBRDate(explicitDateStr);
   if (iso) return iso;
+  const baseIso = parseBRDate(referenceDateIso) || new Date().toISOString().substring(0, 10);
+  const [y, m, d] = baseIso.split("-").map(Number);
   if (daysSince !== undefined && !isNaN(daysSince) && daysSince >= 0) {
-    const refDate = new Date();
-    refDate.setDate(refDate.getDate() - daysSince);
+    const refDate = new Date(Date.UTC(y, m - 1, d));
+    refDate.setUTCDate(refDate.getUTCDate() - daysSince);
     return refDate.toISOString().substring(0, 10);
   }
   if (monthsSince !== undefined && !isNaN(monthsSince) && monthsSince >= 0) {
-    const refDate = new Date();
-    refDate.setDate(refDate.getDate() - monthsSince * 30);
+    const refDate = new Date(Date.UTC(y, m - 1, d));
+    refDate.setUTCDate(refDate.getUTCDate() - monthsSince * 30);
     return refDate.toISOString().substring(0, 10);
   }
   return undefined;
 }
 
+function resolveReportReferenceDate(
+  parsedFile: ESUSParsedFile,
+  customReferenceDate?: string
+): string {
+  const explicitCustom = parseBRDate(customReferenceDate);
+  if (explicitCustom) return explicitCustom;
+
+  const explicitFromHeader = parseBRDate(parsedFile.reportReferenceDate);
+  if (explicitFromHeader) return explicitFromHeader;
+
+  // Fallback: inferir a data de geração do relatório a partir de Data de Nascimento + Idade detalhada ("42 anos e 1 mês e 26 dias")
+  const dateFreq = new Map<string, number>();
+  const sampleLimit = Math.min(parsedFile.rawRows.length, 50);
+  for (let i = 0; i < sampleLimit; i++) {
+    const rawRow = parsedFile.rawRows[i];
+    if (!rawRow) continue;
+    let rawBirth: any;
+    let rawAge: any;
+    for (const [colName, internalKey] of Object.entries(parsedFile.mappedColumns)) {
+      if (internalKey === "dataNascimento") rawBirth = rawRow[colName];
+      else if (internalKey === "idade") rawAge = rawRow[colName];
+    }
+    const birthIso = parseBRDate(rawBirth);
+    const inferred = inferReportDateFromBirthAndAge(birthIso, rawAge);
+    if (inferred) {
+      dateFreq.set(inferred, (dateFreq.get(inferred) || 0) + 1);
+    }
+  }
+
+  if (dateFreq.size > 0) {
+    let bestDate = "";
+    let bestCount = -1;
+    dateFreq.forEach((count, dt) => {
+      if (count > bestCount) {
+        bestCount = count;
+        bestDate = dt;
+      }
+    });
+    if (bestDate) return bestDate;
+  }
+
+  return new Date().toISOString().substring(0, 10);
+}
+
 export function validateAndNormalizeESUSData(
   parsedFile: ESUSParsedFile,
   existingPatientsMap: Map<string, any>,
-  params: DcntParameters = DEFAULT_DCNT_PARAMETERS
+  params: DcntParameters = DEFAULT_DCNT_PARAMETERS,
+  customReferenceDate?: string
 ): ESUSParseResult {
+  const reportReferenceDate = resolveReportReferenceDate(parsedFile, customReferenceDate);
   const rowValidations: ESUSRowValidation[] = [];
   let validCount = 0;
   let warningCount = 0;
@@ -184,14 +234,15 @@ export function validateAndNormalizeESUSData(
     }
 
     const birthDateIso = parseBRDate(fields.dataNascimento);
-    const parsedAge = parseESUSAge(fields.idade);
+    const parsedAge = parseESUSAge(fields.idade, birthDateIso, reportReferenceDate);
     let ageVal = parsedAge !== null ? parsedAge : NaN;
 
     if (isNaN(ageVal) || ageVal < 0) {
       if (birthDateIso) {
         const bDate = new Date(birthDateIso);
-        const now = new Date();
-        ageVal = now.getFullYear() - bDate.getFullYear();
+        const refNow = new Date(reportReferenceDate);
+        const now = !isNaN(refNow.getTime()) ? refNow : new Date();
+        ageVal = now.getUTCFullYear() - bDate.getUTCFullYear();
       } else {
         ageVal = 0;
         if (rawNome) {
@@ -269,10 +320,10 @@ export function validateAndNormalizeESUSData(
     const daysHomeVisit = parseESUSInt(fields.daysSinceHomeVisit);
     const monthsHomeVisit = parseESUSInt(fields.monthsSinceHomeVisit);
 
-    const lastMedicalCare = deriveCareDate(fields.dataUltimoAtendimentoMedico, daysMedical, monthsMedical);
-    const lastNursingCare = deriveCareDate(fields.dataUltimoAtendimentoEnfermagem, daysNursing, monthsNursing);
-    const lastDentalCare = deriveCareDate(fields.dataUltimoAtendimentoOdontologico, daysDental, monthsDental);
-    const lastHomeVisit = deriveCareDate(fields.dataUltimaVisitaACS, daysHomeVisit, monthsHomeVisit);
+    const lastMedicalCare = deriveCareDate(fields.dataUltimoAtendimentoMedico, daysMedical, monthsMedical, reportReferenceDate);
+    const lastNursingCare = deriveCareDate(fields.dataUltimoAtendimentoEnfermagem, daysNursing, monthsNursing, reportReferenceDate);
+    const lastDentalCare = deriveCareDate(fields.dataUltimoAtendimentoOdontologico, daysDental, monthsDental, reportReferenceDate);
+    const lastHomeVisit = deriveCareDate(fields.dataUltimaVisitaACS, daysHomeVisit, monthsHomeVisit, reportReferenceDate);
 
     const elderlyCutoff = params.elderlyAgeCutoff ?? 60;
     const childCutoff = params.childUnder2AgeCutoff ?? 2;
@@ -406,6 +457,7 @@ export function validateAndNormalizeESUSData(
 
   return {
     headerRowIndex: parsedFile.headerRowIndex,
+    reportReferenceDate,
     headersFound: parsedFile.headersFound,
     mappedColumns: parsedFile.mappedColumns,
     unrecognizedColumns: parsedFile.unrecognizedColumns,

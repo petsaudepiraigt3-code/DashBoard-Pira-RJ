@@ -15,11 +15,11 @@ import { purgeAdminDataInStore } from "@/lib/store/admin-maintenance";
 import { getExistingPatientsMap } from "@/lib/store/patients";
 import { getDcntParametersFromStore } from "@/lib/store/parameters";
 import { getAllActiveUnitsFromStore, HealthUnit } from "@/lib/store/units";
-import { ESUSParseResult, StoreImportRecord } from "@/lib/esus/types";
+import { ESUSParseResult, StoreImportRecord, ESUSParsedFile } from "@/lib/esus/types";
 import { maskCPF, maskCNS } from "@/lib/esus/normalizer";
 import { useAuth } from "@/context/auth-context";
 import { useRouter } from "next/navigation";
-import { formatDateTimeBR } from "@/lib/utils/formatters";
+import { formatDateBR, formatDateTimeBR } from "@/lib/utils/formatters";
 import { doc, setDoc, getDoc, serverTimestamp } from "@/lib/store/documents";
 import { db } from "@/lib/store/documents";
 import {
@@ -65,6 +65,10 @@ export default function ImportarPage() {
 
   // Estados principais
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [rawParsedFile, setRawParsedFile] = useState<ESUSParsedFile | null>(null);
+  const [cachedExistingMap, setCachedExistingMap] = useState<Map<string, any> | null>(null);
+  const [cachedDcntParams, setCachedDcntParams] = useState<any>(null);
+  const [reportReferenceDate, setReportReferenceDate] = useState<string>("");
   const [parseResult, setParseResult] = useState<ESUSParseResult | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
@@ -293,12 +297,29 @@ export default function ImportarPage() {
         getDcntParametersFromStore(),
       ]);
       const result = validateAndNormalizeESUSData(parsedFile, existingPatientsMap, dcntParams);
+      setRawParsedFile(parsedFile);
+      setCachedExistingMap(existingPatientsMap);
+      setCachedDcntParams(dcntParams);
+      setReportReferenceDate(result.reportReferenceDate || new Date().toISOString().substring(0, 10));
       setParseResult(result);
     } catch (err: any) {
       alert(`Erro ao analisar o arquivo: ${err.message || "Formato incompatível"}`);
       setSelectedFile(null);
     } finally {
       setIsAnalyzing(false);
+    }
+  };
+
+  const handleReferenceDateChange = (newDateIso: string) => {
+    setReportReferenceDate(newDateIso);
+    if (rawParsedFile && cachedExistingMap && newDateIso) {
+      const updatedResult = validateAndNormalizeESUSData(
+        rawParsedFile,
+        cachedExistingMap,
+        cachedDcntParams || undefined,
+        newDateIso
+      );
+      setParseResult(updatedResult);
     }
   };
 
@@ -339,6 +360,10 @@ export default function ImportarPage() {
   // Reset do fluxo
   const handleResetImport = () => {
     setSelectedFile(null);
+    setRawParsedFile(null);
+    setCachedExistingMap(null);
+    setCachedDcntParams(null);
+    setReportReferenceDate("");
     setParseResult(null);
     setImportCompleted(false);
     setImportStats(null);
@@ -672,11 +697,27 @@ export default function ImportarPage() {
                 </h3>
                 <p className="text-xs font-medium text-blue-700 dark:text-blue-300">
                   ✓ Vínculo configurado para: <strong>{activeUnitNameDisplay}</strong>. {parseResult.headersFound.length} colunas encontradas.
+                  {parseResult.reportReferenceDate ? (
+                    <>
+                      {" "}• Data base da carga e-SUS: <strong>{formatDateBR(parseResult.reportReferenceDate)}</strong>
+                    </>
+                  ) : null}
                 </p>
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-1.5 rounded-lg border border-blue-200 bg-white px-2.5 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-900">
+                <span className="font-semibold text-zinc-600 dark:text-zinc-400">Data da Planilha:</span>
+                <input
+                  type="date"
+                  value={reportReferenceDate}
+                  onChange={(e) => handleReferenceDateChange(e.target.value)}
+                  disabled={isImporting}
+                  className="font-bold text-blue-700 dark:text-blue-300 bg-transparent focus:outline-none cursor-pointer"
+                  title="Data de extração do relatório e-SUS APS usada para calcular Última Consulta e Última Visita ACS"
+                />
+              </div>
               <button
                 onClick={handleResetImport}
                 disabled={isImporting}

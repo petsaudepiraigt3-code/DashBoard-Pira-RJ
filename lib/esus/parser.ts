@@ -1,14 +1,41 @@
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { normalizeHeader, matchHeaderToInternalKey } from "./mappers";
+import { extractReportDateFromText } from "./normalizer";
 import { ESUSRawRow } from "./types";
 
 export interface ESUSParsedFile {
   headerRowIndex: number;
+  reportReferenceDate?: string; // YYYY-MM-DD extraída do cabeçalho do relatório e-SUS APS
   headersFound: string[];
   mappedColumns: { [originalColumn: string]: string }; // columnaOriginal -> campoInterno
   unrecognizedColumns: string[];
   rawRows: ESUSRawRow[];
+}
+
+// Extrai a data de referência do relatório e-SUS APS a partir das linhas de metadados acima do cabeçalho da tabela
+function extractReportDateFromMetadataRows(
+  rows: any[][],
+  headerRowIndex: number,
+  fileName?: string
+): string | undefined {
+  const maxMetaRow = headerRowIndex > 0 ? headerRowIndex : Math.min(rows.length, 15);
+  for (let i = 0; i < maxMetaRow; i++) {
+    if (i === headerRowIndex) continue;
+    const row = rows[i];
+    if (!Array.isArray(row)) continue;
+    for (const cell of row) {
+      const detected = extractReportDateFromText(cell);
+      if (detected) {
+        return detected;
+      }
+    }
+  }
+  if (fileName) {
+    const fromFile = extractReportDateFromText(fileName);
+    if (fromFile) return fromFile;
+  }
+  return undefined;
 }
 
 // Leitor inteligente de arquivo com detecção de codificação (UTF-8 vs ISO-8859-1)
@@ -144,8 +171,11 @@ async function parseCSVFile(file: File): Promise<ESUSParsedFile> {
           }
         }
 
+        const reportReferenceDate = extractReportDateFromMetadataRows(rows, headerRowIndex, file.name);
+
         resolve({
           headerRowIndex: headerRowIndex + 1, // 1-indexed para exibição
+          reportReferenceDate,
           headersFound: rawHeaders.filter(Boolean),
           mappedColumns,
           unrecognizedColumns,
@@ -167,6 +197,11 @@ async function parseExcelFile(file: File): Promise<ESUSParsedFile> {
   const firstSheetName = workbook.SheetNames[0];
   const worksheet = workbook.Sheets[firstSheetName];
   const rows: any[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+  const formattedRows: any[][] = XLSX.utils.sheet_to_json(worksheet, {
+    header: 1,
+    raw: false,
+    dateNF: "dd/mm/yyyy",
+  });
 
   if (!rows || rows.length === 0) {
     throw new Error("A planilha Excel está vazia.");
@@ -180,6 +215,10 @@ async function parseExcelFile(file: File): Promise<ESUSParsedFile> {
       break;
     }
   }
+
+  const reportReferenceDate =
+    extractReportDateFromMetadataRows(formattedRows, headerRowIndex, file.name) ||
+    extractReportDateFromMetadataRows(rows, headerRowIndex, file.name);
 
   const rawHeaders = (rows[headerRowIndex] || []).map((h) => 
     String(h || "").replace(/^["']+|["']+$|"/g, "").trim()
@@ -200,13 +239,22 @@ async function parseExcelFile(file: File): Promise<ESUSParsedFile> {
   const rawRows: ESUSRawRow[] = [];
   for (let i = headerRowIndex + 1; i < rows.length; i++) {
     const rowData = rows[i];
+    const fmtRowData = formattedRows[i] || [];
     if (!rowData || rowData.length === 0) continue;
 
     const rowObj: ESUSRawRow = {};
     rawHeaders.forEach((headerName, colIdx) => {
       if (headerName) {
-        const valStr = rowData[colIdx] !== undefined 
-          ? String(rowData[colIdx]).replace(/^["']+|["']+$|"/g, "").trim() 
+        const rawCell = rowData[colIdx];
+        const fmtCell = fmtRowData[colIdx];
+        // Se a célula no Excel for um serial numérico de data formatado como DD/MM/YYYY, preservar a data formatada
+        const useFormattedDate =
+          typeof rawCell === "number" &&
+          typeof fmtCell === "string" &&
+          /^\d{1,2}\/\d{1,2}\/\d{2,4}/.test(fmtCell.trim());
+        const chosenVal = useFormattedDate ? fmtCell : rawCell;
+        const valStr = chosenVal !== undefined 
+          ? String(chosenVal).replace(/^["']+|["']+$|"/g, "").trim() 
           : "";
         rowObj[headerName] = valStr;
       }
@@ -220,6 +268,7 @@ async function parseExcelFile(file: File): Promise<ESUSParsedFile> {
 
   return {
     headerRowIndex: headerRowIndex + 1, // 1-indexed
+    reportReferenceDate,
     headersFound: rawHeaders.filter(Boolean),
     mappedColumns,
     unrecognizedColumns,

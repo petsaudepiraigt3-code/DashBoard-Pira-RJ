@@ -26,7 +26,11 @@ export function parseBooleanESUS(raw: any): boolean {
   return cleaned === "sim" || cleaned === "s" || cleaned === "true" || cleaned === "1" || cleaned === "ativo";
 }
 
-export function parseESUSAge(ageRaw: any, birthDateIso?: string | null): number {
+export function parseESUSAge(
+  ageRaw: any,
+  birthDateIso?: string | null,
+  referenceDateIso?: string | null
+): number {
   if (typeof ageRaw === "number" && !isNaN(ageRaw) && ageRaw >= 0) {
     return Math.floor(ageRaw);
   }
@@ -46,16 +50,93 @@ export function parseESUSAge(ageRaw: any, birthDateIso?: string | null): number 
   if (birthDateIso) {
     const bDate = new Date(birthDateIso);
     if (!isNaN(bDate.getTime())) {
-      const now = new Date();
-      let age = now.getFullYear() - bDate.getFullYear();
-      const mDiff = now.getMonth() - bDate.getMonth();
-      if (mDiff < 0 || (mDiff === 0 && now.getDate() < bDate.getDate())) {
+      const ref = referenceDateIso ? new Date(referenceDateIso) : new Date();
+      const now = !isNaN(ref.getTime()) ? ref : new Date();
+      let age = now.getUTCFullYear() - bDate.getUTCFullYear();
+      const mDiff = now.getUTCMonth() - bDate.getUTCMonth();
+      if (mDiff < 0 || (mDiff === 0 && now.getUTCDate() < bDate.getUTCDate())) {
         age--;
       }
       return Math.max(0, age);
     }
   }
   return -1;
+}
+
+// 0.1 Extrair data de referência do relatório (DD/MM/YYYY ou YYYY-MM-DD) em textos de cabeçalho do e-SUS
+export function extractReportDateFromText(raw: any): string | null {
+  if (raw === null || raw === undefined) return null;
+  if (raw instanceof Date && !isNaN(raw.getTime())) {
+    return raw.toISOString().substring(0, 10);
+  }
+  const str = String(raw).trim();
+  if (!str) return null;
+
+  // Procurar padrão brasileiro DD/MM/YYYY (ex: "03/11/2026" ou "Data: 03/11/2026 às 10:15")
+  const brMatches = str.matchAll(/\b(\d{1,2})[\/.-](\d{1,2})[\/.-](20\d{2})\b/g);
+  for (const match of brMatches) {
+    const day = parseInt(match[1], 10);
+    const month = parseInt(match[2], 10);
+    const year = parseInt(match[3], 10);
+    if (year >= 2020 && year <= 2100 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      return `${String(year)}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    }
+  }
+
+  // Procurar padrão ISO YYYY-MM-DD
+  const isoMatches = str.matchAll(/\b(20\d{2})-(\d{2})-(\d{2})\b/g);
+  for (const match of isoMatches) {
+    const year = parseInt(match[1], 10);
+    const month = parseInt(match[2], 10);
+    const day = parseInt(match[3], 10);
+    if (year >= 2020 && year <= 2100 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      return `${String(year)}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    }
+  }
+
+  return null;
+}
+
+// 0.2 Inferir a data de referência do relatório e-SUS a partir de Data de Nascimento + Idade detalhada ("42 anos e 1 mês e 26 dias")
+export function inferReportDateFromBirthAndAge(
+  birthDateIso?: string | null,
+  ageRaw?: any
+): string | null {
+  if (!birthDateIso || !ageRaw) return null;
+  const str = cleanESUSString(ageRaw);
+  if (!str) return null;
+
+  // Só inferir quando a string de idade contiver a precisão em dias do e-SUS APS (ex: "42 anos e 1 mês e 26 dias")
+  const daysMatch = str.match(/(\d+)\s*dia/i);
+  if (!daysMatch) return null;
+
+  const yearsMatch = str.match(/(\d+)\s*ano/i);
+  const monthsMatch = str.match(/(\d+)\s*m[eê]s/i);
+
+  const years = yearsMatch ? parseInt(yearsMatch[1], 10) : 0;
+  const months = monthsMatch ? parseInt(monthsMatch[1], 10) : 0;
+  const days = parseInt(daysMatch[1], 10);
+
+  const parts = birthDateIso.substring(0, 10).split("-").map(Number);
+  if (parts.length !== 3 || parts.some((n) => isNaN(n))) return null;
+  const [bYear, bMonth, bDay] = parts;
+
+  const totalMonths = (bMonth - 1) + months;
+  const targetYear = bYear + years + Math.floor(totalMonths / 12);
+  const targetMonthZeroIndexed = ((totalMonths % 12) + 12) % 12;
+
+  // Ajustar dia caso o mês de destino tenha menos dias (ex: 31 para 30 ou 28/29)
+  const maxDaysInTargetMonth = new Date(Date.UTC(targetYear, targetMonthZeroIndexed + 1, 0)).getUTCDate();
+  const clampedDay = Math.min(bDay, maxDaysInTargetMonth);
+
+  const refDate = new Date(Date.UTC(targetYear, targetMonthZeroIndexed, clampedDay));
+  refDate.setUTCDate(refDate.getUTCDate() + days);
+
+  if (isNaN(refDate.getTime())) return null;
+  const rYear = refDate.getUTCFullYear();
+  if (rYear < 2020 || rYear > 2100) return null;
+
+  return refDate.toISOString().substring(0, 10);
 }
 
 // 1. Normalização de CPF
