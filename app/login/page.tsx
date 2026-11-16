@@ -14,8 +14,15 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const router = useRouter();
-  const { userProfile, loginWithDevCredentials } = useAuth();
-  useEffect(() => { if (userProfile?.ativo) router.replace('/dashboard'); }, [userProfile, router]);
+  const { userProfile, unauthorizedMessage, loading: authLoading, loginWithDevCredentials } = useAuth();
+  useEffect(() => {
+    if (userProfile?.ativo) {
+      router.replace('/dashboard');
+    } else if (loading && !authLoading && unauthorizedMessage) {
+      setError(unauthorizedMessage);
+      setLoading(false);
+    }
+  }, [userProfile, unauthorizedMessage, authLoading, loading, router]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -47,16 +54,20 @@ export default function LoginPage() {
 
         let p: Record<string, any> | null = null;
         try {
-          const { data: resolvedProfile } = await supabase.rpc('resolve_my_profile');
-          if (resolvedProfile && typeof resolvedProfile === 'object' && !Array.isArray(resolvedProfile) && (resolvedProfile as any).perfil) {
-            p = resolvedProfile as Record<string, any>;
-          }
-        } catch {
-          // Ignorar falha de RPC e tentar leitura direta
-        }
-        if (!p || !p.perfil) {
           const profile = await getDoc(doc(db, 'usuarios', data.user.id));
           if (profile.exists()) p = profile.data();
+        } catch {
+          // Seguir para fallback
+        }
+        if (!p || !p.perfil) {
+          try {
+            const { data: resolvedProfile } = await supabase.rpc('resolve_my_profile');
+            if (resolvedProfile && typeof resolvedProfile === 'object' && !Array.isArray(resolvedProfile) && (resolvedProfile as any).perfil) {
+              p = resolvedProfile as Record<string, any>;
+            }
+          } catch {
+            // Ignorar falha de RPC e tentar leitura da coleção
+          }
         }
         if (!p || !p.perfil) {
           const userDocs = await getDocs(collection(db, 'usuarios'));

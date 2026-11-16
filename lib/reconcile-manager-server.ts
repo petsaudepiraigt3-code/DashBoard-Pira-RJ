@@ -64,6 +64,53 @@ export async function handleReconcileManager(req: Request) {
     }));
     const aliasMap = buildUnitAliasMap(unitEntries);
 
+    let resolvedUnitId = resolveCanonicalUnitId(
+      String(primaryProfile.unidadeId || primaryProfile.unidade_id || ''),
+      aliasMap
+    );
+
+    // Quick count check for the manager's current unit before fetching all patients
+    let quickUnitPatients: Array<{ path: string; data: Record<string, unknown> }> | null = null;
+    try {
+      const { data: qData, error: qError } = await admin
+        .from('app_documents')
+        .select('path,data')
+        .eq('collection', 'pacientes')
+        .eq('data->>unidadeId', resolvedUnitId)
+        .order('path')
+        .range(0, 499);
+      if (!qError && qData) {
+        quickUnitPatients = qData;
+      }
+    } catch {
+      // Fallback para varredura completa
+    }
+
+    if (quickUnitPatients && quickUnitPatients.length > 0 && quickUnitPatients.length < 500) {
+      const updatedProfile = {
+        ...primaryProfile,
+        uid: user.id,
+        authUid: user.id,
+        authAtiva: true,
+        perfil: 'GERENTE',
+        unidadeId: resolvedUnitId,
+        ativo: true,
+        updatedAt: new Date().toISOString(),
+      };
+
+      await admin.from('app_documents').upsert({
+        path: `usuarios/${user.id}`,
+        data: updatedProfile,
+        updated_at: new Date().toISOString(),
+      });
+
+      return NextResponse.json({
+        success: true,
+        unitId: resolvedUnitId,
+        patients: quickUnitPatients.map((r) => ({ id: r.path.split('/').at(-1)!, data: r.data })),
+      });
+    }
+
     // Fetch all patient documents to check unit distribution
     const patientRows: Array<{ path: string; data: Record<string, unknown> }> = [];
     for (let offset = 0; ; offset += 500) {
@@ -91,11 +138,6 @@ export async function handleReconcileManager(req: Request) {
       }
       patientsByCanonicalUnit.get(key)!.push({ id: patId, data: row.data });
     }
-
-    let resolvedUnitId = resolveCanonicalUnitId(
-      String(primaryProfile.unidadeId || primaryProfile.unidade_id || ''),
-      aliasMap
-    );
 
     // If current unit has 0 patients, check if manager is linked via unidades.gerenteEmail or another profile doc, or fallback to populated unit when only one unit has patients
     const currentUnitPatients = patientsByCanonicalUnit.get(resolvedUnitId.toUpperCase()) || [];

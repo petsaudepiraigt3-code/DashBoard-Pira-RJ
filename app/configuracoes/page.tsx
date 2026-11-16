@@ -298,11 +298,13 @@ export default function ConfiguracoesPage() {
     setLoadingMicroareas(true);
     setLoadingAcs(true);
     try {
-      const maList = await getMicroareasByUnit(uId);
+      const [maList, rawAcsList, diag] = await Promise.all([
+        getMicroareasByUnit(uId),
+        getAcsUsersByUnit(uId),
+        getUnitAdministrativeDiagnostics(uId),
+      ]);
       setMicroareas(maList);
 
-      const rawAcsList = await getAcsUsersByUnit(uId);
-      
       // Associar status de autenticação real aos ACS da unidade
       const reconcAcsList: ReconciledUser[] = rawAcsList.map((a) => {
         const matched = allUsers.find((u) => u.email === a.email);
@@ -315,10 +317,7 @@ export default function ConfiguracoesPage() {
       });
       setAcsUsers(reconcAcsList);
 
-      const counts = await getPatientCountMapByMicroarea(uId);
-      setPatientCounts(counts);
-
-      const diag = await getUnitAdministrativeDiagnostics(uId);
+      setPatientCounts(diag?.patientCountMap || {});
       setUnitDiag(diag);
     } catch (err) {
       // Ignorar
@@ -423,7 +422,7 @@ export default function ConfiguracoesPage() {
                 unidadeId: cleanCodigo,
                 ativo: true,
               }),
-            }).catch(() => {});
+            }).catch(() => { });
           }
         }
       }
@@ -502,7 +501,21 @@ export default function ConfiguracoesPage() {
     if (selectedUnitId) {
       fetchUnitData(selectedUnitId);
     }
-  }, [selectedUnitId, allUsers]);
+  }, [selectedUnitId]);
+
+  useEffect(() => {
+    if (allUsers.length === 0) return;
+    setAcsUsers((prev) =>
+      prev.map((a) => {
+        const matched = allUsers.find((u) => u.email === a.email);
+        return {
+          ...a,
+          authStatus: matched?.authStatus || a.authStatus || "AUTH_INEXISTENTE",
+          authUid: matched?.authUid || a.authUid || a.uid,
+        };
+      })
+    );
+  }, [allUsers]);
 
   // Criar Novo ACS na Unidade (com Login imediato e Atribuição de Microáreas na mesma tela)
   const handleCreateAcs = async (e: React.FormEvent) => {
@@ -976,11 +989,10 @@ export default function ConfiguracoesPage() {
         {(role as string) === "ADMIN" && (
           <button
             onClick={() => setActiveTab("unidades")}
-            className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition-all cursor-pointer ${
-              activeTab === "unidades"
-                ? "border-blue-600 text-blue-600 dark:border-blue-500 dark:text-blue-400"
-                : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
-            }`}
+            className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition-all cursor-pointer ${activeTab === "unidades"
+              ? "border-blue-600 text-blue-600 dark:border-blue-500 dark:text-blue-400"
+              : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+              }`}
           >
             <Building2 className="h-4 w-4" />
             <span>Áreas (Unidades de Saúde)</span>
@@ -989,11 +1001,10 @@ export default function ConfiguracoesPage() {
 
         <button
           onClick={() => setActiveTab("microareas")}
-          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition-all cursor-pointer ${
-            activeTab === "microareas"
-              ? "border-blue-600 text-blue-600 dark:border-blue-500 dark:text-blue-400"
-              : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
-          }`}
+          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition-all cursor-pointer ${activeTab === "microareas"
+            ? "border-blue-600 text-blue-600 dark:border-blue-500 dark:text-blue-400"
+            : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+            }`}
         >
           <MapPin className="h-4 w-4" />
           <span>Microáreas</span>
@@ -1001,11 +1012,10 @@ export default function ConfiguracoesPage() {
 
         <button
           onClick={() => setActiveTab("acs")}
-          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition-all cursor-pointer ${
-            activeTab === "acs"
-              ? "border-blue-600 text-blue-600 dark:border-blue-500 dark:text-blue-400"
-              : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
-          }`}
+          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition-all cursor-pointer ${activeTab === "acs"
+            ? "border-blue-600 text-blue-600 dark:border-blue-500 dark:text-blue-400"
+            : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+            }`}
         >
           <UserCheck className="h-4 w-4" />
           <span>Equipe de ACS</span>
@@ -1016,11 +1026,10 @@ export default function ConfiguracoesPage() {
             setActiveTab("cargas");
             fetchCargas();
           }}
-          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition-all cursor-pointer ${
-            activeTab === "cargas"
-              ? "border-blue-600 text-blue-600 dark:border-blue-500 dark:text-blue-400"
-              : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
-          }`}
+          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition-all cursor-pointer ${activeTab === "cargas"
+            ? "border-blue-600 text-blue-600 dark:border-blue-500 dark:text-blue-400"
+            : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+            }`}
         >
           <FileSpreadsheet className="h-4 w-4" />
           <span>Controle de Cargas</span>
@@ -1029,11 +1038,10 @@ export default function ConfiguracoesPage() {
         {(role as string) === "ADMIN" && (
           <button
             onClick={() => setActiveTab("usuarios")}
-            className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition-all cursor-pointer ${
-              activeTab === "usuarios"
-                ? "border-blue-600 text-blue-600 dark:border-blue-500 dark:text-blue-400"
-                : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
-            }`}
+            className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition-all cursor-pointer ${activeTab === "usuarios"
+              ? "border-blue-600 text-blue-600 dark:border-blue-500 dark:text-blue-400"
+              : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+              }`}
           >
             <Users className="h-4 w-4" />
             <span>Usuários e Perfis (ADMIN)</span>
@@ -1042,11 +1050,10 @@ export default function ConfiguracoesPage() {
 
         <button
           onClick={() => setActiveTab("diagnostico")}
-          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition-all cursor-pointer ${
-            activeTab === "diagnostico"
-              ? "border-blue-600 text-blue-600 dark:border-blue-500 dark:text-blue-400"
-              : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
-          }`}
+          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition-all cursor-pointer ${activeTab === "diagnostico"
+            ? "border-blue-600 text-blue-600 dark:border-blue-500 dark:text-blue-400"
+            : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+            }`}
         >
           <ShieldCheck className="h-4 w-4" />
           <span>Diagnóstico</span>
@@ -1054,11 +1061,10 @@ export default function ConfiguracoesPage() {
 
         <button
           onClick={() => setActiveTab("parametros")}
-          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition-all cursor-pointer ${
-            activeTab === "parametros"
-              ? "border-blue-600 text-blue-600 dark:border-blue-500 dark:text-blue-400"
-              : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
-          }`}
+          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition-all cursor-pointer ${activeTab === "parametros"
+            ? "border-blue-600 text-blue-600 dark:border-blue-500 dark:text-blue-400"
+            : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+            }`}
         >
           <Sliders className="h-4 w-4" />
           <span>Parâmetros DCNT</span>
@@ -1070,11 +1076,10 @@ export default function ConfiguracoesPage() {
               setActiveTab("manutencao");
               setPurgeFeedback(null);
             }}
-            className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition-all cursor-pointer ${
-              activeTab === "manutencao"
-                ? "border-red-600 text-red-600 dark:border-red-500 dark:text-red-400"
-                : "border-transparent text-zinc-500 hover:text-red-700 dark:hover:text-red-400"
-            }`}
+            className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition-all cursor-pointer ${activeTab === "manutencao"
+              ? "border-red-600 text-red-600 dark:border-red-500 dark:text-red-400"
+              : "border-transparent text-zinc-500 hover:text-red-700 dark:hover:text-red-400"
+              }`}
           >
             <Database className="h-4 w-4" />
             <span>Limpeza de Dados (ADMIN)</span>
@@ -1179,11 +1184,10 @@ export default function ConfiguracoesPage() {
                           {selectedUnitObj?.nome || "USF Arrozal 3"}
                         </td>
                         <td className="px-4 py-3">
-                          <span className={`inline-flex rounded px-2 py-0.5 text-[10px] font-bold ${
-                            m.tipoMicroarea === "NORMAL"
-                              ? "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300"
-                              : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
-                          }`}>
+                          <span className={`inline-flex rounded px-2 py-0.5 text-[10px] font-bold ${m.tipoMicroarea === "NORMAL"
+                            ? "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300"
+                            : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                            }`}>
                             {m.tipoMicroarea}
                           </span>
                         </td>
@@ -1320,11 +1324,10 @@ export default function ConfiguracoesPage() {
                           {totalPatientsForAcs}
                         </td>
                         <td className="px-4 py-3">
-                          <span className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-extrabold ${
-                            hasAuth
-                              ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
-                              : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
-                          }`}>
+                          <span className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-extrabold ${hasAuth
+                            ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                            : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                            }`}>
                             {hasAuth ? "Ativa" : "Sem conta de login"}
                           </span>
                         </td>
@@ -1373,11 +1376,10 @@ export default function ConfiguracoesPage() {
 
                             <button
                               onClick={() => handleToggleUserStatus(a)}
-                              className={`rounded px-2 py-1 text-[11px] font-bold cursor-pointer ${
-                                a.ativo !== false
-                                  ? "bg-red-50 text-red-700 hover:bg-red-100 dark:bg-red-950 dark:text-red-300"
-                                  : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950 dark:text-emerald-300"
-                              }`}
+                              className={`rounded px-2 py-1 text-[11px] font-bold cursor-pointer ${a.ativo !== false
+                                ? "bg-red-50 text-red-700 hover:bg-red-100 dark:bg-red-950 dark:text-red-300"
+                                : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950 dark:text-emerald-300"
+                                }`}
                             >
                               {a.ativo !== false ? "Desativar" : "Ativar"}
                             </button>
@@ -1425,11 +1427,10 @@ export default function ConfiguracoesPage() {
               return (
                 <div
                   key={u.id}
-                  className={`rounded-xl border p-5 shadow-2xs space-y-3 transition-all ${
-                    selectedUnitId === u.id
-                      ? "border-blue-500 bg-blue-50/20 dark:bg-blue-950/20 dark:border-blue-600"
-                      : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"
-                  }`}
+                  className={`rounded-xl border p-5 shadow-2xs space-y-3 transition-all ${selectedUnitId === u.id
+                    ? "border-blue-500 bg-blue-50/20 dark:bg-blue-950/20 dark:border-blue-600"
+                    : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"
+                    }`}
                 >
                   <div className="flex items-start justify-between">
                     <div>
@@ -1458,11 +1459,10 @@ export default function ConfiguracoesPage() {
                     )}
                     <div className="flex items-center justify-between">
                       <span className="text-zinc-500 font-medium">Cargo / Função:</span>
-                      <span className={`rounded px-2 py-0.5 text-[10px] font-bold ${
-                        isGerente
-                          ? "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300"
-                          : "bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300"
-                      }`}>
+                      <span className={`rounded px-2 py-0.5 text-[10px] font-bold ${isGerente
+                        ? "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300"
+                        : "bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300"
+                        }`}>
                         {respCargo}
                       </span>
                     </div>
@@ -1547,11 +1547,10 @@ export default function ConfiguracoesPage() {
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-1.5">
                           <span className="font-extrabold text-zinc-900 dark:text-zinc-100">{c.responsavel_carga}</span>
-                          <span className={`rounded px-1.5 py-0.2 text-[9px] font-extrabold uppercase ${
-                            c.responsavel_perfil === "ACS"
-                              ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
-                              : "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300"
-                          }`}>
+                          <span className={`rounded px-1.5 py-0.2 text-[9px] font-extrabold uppercase ${c.responsavel_perfil === "ACS"
+                            ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                            : "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300"
+                            }`}>
                             {c.responsavel_perfil || "Gerente"}
                           </span>
                         </div>
@@ -1572,11 +1571,10 @@ export default function ConfiguracoesPage() {
                         +{c.novos_pesos || 0}
                       </td>
                       <td className="px-4 py-3">
-                        <span className={`inline-flex rounded px-2 py-0.5 text-[10px] font-bold ${
-                          c.status === "Concluído"
-                            ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
-                            : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
-                        }`}>
+                        <span className={`inline-flex rounded px-2 py-0.5 text-[10px] font-bold ${c.status === "Concluído"
+                          ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                          : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                          }`}>
                           {c.status}
                         </span>
                       </td>
@@ -1637,11 +1635,10 @@ export default function ConfiguracoesPage() {
                       <td className="px-4 py-3 font-bold">{u.perfil}</td>
                       <td className="px-4 py-3 font-semibold">{unitDisplayName}</td>
                       <td className="px-4 py-3">
-                        <span className={`inline-flex rounded px-2 py-0.5 text-[10px] font-bold ${
-                          hasAuth
-                            ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
-                            : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
-                        }`}>
+                        <span className={`inline-flex rounded px-2 py-0.5 text-[10px] font-bold ${hasAuth
+                          ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                          : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                          }`}>
                           {hasAuth ? "Ativa" : "Sem conta de login"}
                         </span>
                       </td>
@@ -1682,11 +1679,10 @@ export default function ConfiguracoesPage() {
 
                           <button
                             onClick={() => handleToggleUserStatus(u)}
-                            className={`rounded px-2 py-1 text-[11px] font-bold cursor-pointer ${
-                              u.ativo !== false
-                                ? "bg-red-50 text-red-700 hover:bg-red-100 dark:bg-red-950 dark:text-red-300"
-                                : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950 dark:text-emerald-300"
-                            }`}
+                            className={`rounded px-2 py-1 text-[11px] font-bold cursor-pointer ${u.ativo !== false
+                              ? "bg-red-50 text-red-700 hover:bg-red-100 dark:bg-red-950 dark:text-red-300"
+                              : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950 dark:text-emerald-300"
+                              }`}
                           >
                             {u.ativo !== false ? "Desativar" : "Ativar"}
                           </button>
@@ -2453,11 +2449,10 @@ export default function ConfiguracoesPage() {
                         return (
                           <label
                             key={m.id}
-                            className={`flex items-center justify-between p-2 rounded-lg border text-xs cursor-pointer transition-all ${
-                              isChecked
-                                ? "border-blue-500 bg-blue-50/60 dark:bg-blue-950/40"
-                                : "border-zinc-200 dark:border-zinc-800 hover:bg-white dark:hover:bg-zinc-800"
-                            }`}
+                            className={`flex items-center justify-between p-2 rounded-lg border text-xs cursor-pointer transition-all ${isChecked
+                              ? "border-blue-500 bg-blue-50/60 dark:bg-blue-950/40"
+                              : "border-zinc-200 dark:border-zinc-800 hover:bg-white dark:hover:bg-zinc-800"
+                              }`}
                           >
                             <div className="flex items-center gap-2">
                               <input
@@ -2556,17 +2551,16 @@ export default function ConfiguracoesPage() {
                     <div
                       key={m.id}
                       onClick={() => handleToggleMicroareaCheckbox(m)}
-                      className={`flex items-center justify-between p-2.5 rounded-lg border text-xs cursor-pointer transition-all ${
-                        isAssigned
-                          ? "border-blue-500 bg-blue-50/50 dark:bg-blue-950/40"
-                          : "border-zinc-200 dark:border-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-800/50"
-                      }`}
+                      className={`flex items-center justify-between p-2.5 rounded-lg border text-xs cursor-pointer transition-all ${isAssigned
+                        ? "border-blue-500 bg-blue-50/50 dark:bg-blue-950/40"
+                        : "border-zinc-200 dark:border-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-800/50"
+                        }`}
                     >
                       <div className="flex items-center gap-2">
                         <input
                           type="checkbox"
                           checked={isAssigned}
-                          onChange={() => {}}
+                          onChange={() => { }}
                           className="rounded border-zinc-300"
                         />
                         <span className="font-extrabold text-zinc-900 dark:text-zinc-100">{m.nome}</span>
@@ -3073,7 +3067,7 @@ export default function ConfiguracoesPage() {
                   disabled={
                     isPurgingData ||
                     purgeConfirmText.trim().toUpperCase() !==
-                      (purgeModalTarget === "patients" ? "APAGAR PACIENTES" : "APAGAR CARGAS")
+                    (purgeModalTarget === "patients" ? "APAGAR PACIENTES" : "APAGAR CARGAS")
                   }
                   className="flex items-center gap-1.5 rounded-lg bg-red-600 px-4 py-1.5 font-bold text-white hover:bg-red-700 cursor-pointer disabled:opacity-50"
                 >

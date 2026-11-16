@@ -467,6 +467,18 @@ test('GERENTE and ACS resolve unit aliases and casing consistently with PostgreS
    assignedMicroareaCodes: ['05'],
   });
   assert.equal(acsPatients.length, 2);
+
+  // Direct single-patient fetch and preloaded diagnostics avoid redundant full-collection scans
+  const singlePatient = await patientsStore.getPatientByIdFromStore('p-alias-1', {
+   role: 'GERENTE',
+   userUnitId: 'USF-001',
+  });
+  assert.ok(singlePatient);
+  assert.equal(singlePatient.name, 'Paciente Alias Nome');
+
+  const preloadedDiag = await units.getUnitAdministrativeDiagnostics('USF-001', mgrPatients);
+  assert.equal(preloadedDiag.totalPacientes, 2);
+  assert.equal(preloadedDiag.patientCountMap['05'], 2);
  } finally {
   await h.close();
  }

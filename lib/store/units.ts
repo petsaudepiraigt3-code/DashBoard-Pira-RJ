@@ -647,32 +647,45 @@ export async function migrateExistingPatientsMicroareaLinks(): Promise<{ updated
 }
 
 // 13. Diagnóstico Administrativo Completo da Unidade
-export async function getUnitAdministrativeDiagnostics(unidadeId: string) {
-  const units = await getAllActiveUnitsFromStore().catch(() => []);
+export async function getUnitAdministrativeDiagnostics(
+  unidadeId: string,
+  preloadedPatients?: Array<{ unidadeId?: string; unidadeNome?: string; microarea?: string; microareaCodigo?: string }>
+) {
+  const [units, microareas, acsUsers, pSnap] = await Promise.all([
+    getAllActiveUnitsFromStore().catch(() => []),
+    getMicroareasByUnit(unidadeId),
+    getAcsUsersByUnit(unidadeId),
+    preloadedPatients ? Promise.resolve(null) : getDocs(collection(db, "pacientes")).catch(() => null),
+  ]);
   const aliasMap = buildUnitAliasMap(units);
   const normUnitId = resolveCanonicalUnitId(unidadeId, aliasMap);
-  const microareas = await getMicroareasByUnit(normUnitId);
-  const acsUsers = await getAcsUsersByUnit(normUnitId);
-  const countMap = await getPatientCountMapByMicroarea(normUnitId);
+  const countMap: Record<string, number> = {};
 
   let totalPatients = 0;
   let semMicroarea = 0;
   let foraArea = 0;
 
-  try {
-    const pSnap = await getDocs(collection(db, "pacientes"));
-    pSnap.forEach((docSnap) => {
-      const d = docSnap.data();
-      const patUnit = resolveCanonicalUnitId(d.unidadeId || d.unidadeNome, aliasMap);
-      if (patUnit.toUpperCase() === normUnitId.toUpperCase()) {
-        totalPatients++;
-        const maUpper = (d.microarea || "").toUpperCase();
-        if (maUpper.includes("FORA")) foraArea++;
-        if (maUpper.includes("NAO INFORMADA") || maUpper === "-" || !d.microarea) semMicroarea++;
+  const rows: Array<{ unidadeId?: string; unidadeNome?: string; microarea?: string; microareaCodigo?: string }> =
+    preloadedPatients || (pSnap ? pSnap.docs.map((docSnap) => docSnap.data()) : []);
+
+  for (const d of rows) {
+    const patUnit = resolveCanonicalUnitId(d.unidadeId || d.unidadeNome, aliasMap);
+    if (patUnit.toUpperCase() === normUnitId.toUpperCase()) {
+      totalPatients++;
+      const rawMA = d.microarea || "Não informada";
+      const maUpper = rawMA.toUpperCase();
+      if (maUpper.includes("FORA")) foraArea++;
+      if (maUpper.includes("NAO INFORMADA") || maUpper.includes("NÃO INFORMADA") || maUpper === "-" || !d.microarea) {
+        semMicroarea++;
       }
-    });
-  } catch (err) {
-    // Ignorar
+
+      const digits = rawMA.replace(/\D/g, "").trim();
+      const codeClean = digits ? digits.padStart(2, "0") : "NAO_INFORMADA";
+      countMap[codeClean] = (countMap[codeClean] || 0) + 1;
+      if (digits && digits !== codeClean) {
+        countMap[digits] = countMap[codeClean];
+      }
+    }
   }
 
   const semACS = microareas.filter((m) => !m.acsId && m.tipoMicroarea === "NORMAL").length;

@@ -1182,30 +1182,38 @@ as $$
 $$;
 
 create or replace function public.patient_scope(p jsonb) returns boolean
-language sql stable security definer set search_path = public
+language plpgsql stable security definer set search_path = public
 as $$
- select coalesce(
-   public.current_profile()->>'perfil' = 'ADMIN' or (
-    public.normalize_unit_id(p->>'unidadeId') = public.normalize_unit_id(public.current_profile()->>'unidadeId') and (
-      public.current_profile()->>'perfil' = 'GERENTE' or (
-        public.current_profile()->>'perfil' = 'ACS' and exists (
-          select 1 from public.app_documents m where m.collection = 'microareas'
-          and public.normalize_unit_id(m.data->>'unidadeId') = public.normalize_unit_id(p->>'unidadeId')
-          and (
-            m.data->>'acsId' = auth.uid()::text
-            or m.data->>'acsId' = public.current_profile()->>'uid'
-          )
-          and coalesce(m.data->>'ativo', 'true') <> 'false'
-          and (
-            m.data->>'codigo' = coalesce(p->>'microareaCodigo', regexp_replace(p->>'microarea', '\D', '', 'g'))
-            or lpad(regexp_replace(coalesce(m.data->>'codigo', ''), '\D', '', 'g'), 2, '0') =
-               lpad(coalesce(nullif(regexp_replace(coalesce(p->>'microareaCodigo', ''), '\D', '', 'g'), ''), regexp_replace(coalesce(p->>'microarea', ''), '\D', '', 'g')), 2, '0')
-          )
-        )
+declare
+  actor jsonb := public.current_profile();
+  actor_role text := actor->>'perfil';
+  actor_unit text;
+  pat_unit text;
+begin
+  if actor is null then return false; end if;
+  if actor_role = 'ADMIN' then return true; end if;
+  actor_unit := public.normalize_unit_id(actor->>'unidadeId');
+  pat_unit := public.normalize_unit_id(p->>'unidadeId');
+  if pat_unit <> actor_unit then return false; end if;
+  if actor_role = 'GERENTE' then return true; end if;
+  if actor_role = 'ACS' then
+    return exists (
+      select 1 from public.app_documents m where m.collection = 'microareas'
+      and public.normalize_unit_id(m.data->>'unidadeId') = pat_unit
+      and (
+        m.data->>'acsId' = auth.uid()::text
+        or m.data->>'acsId' = actor->>'uid'
       )
-    )
-   ), false)
-$$;
+      and coalesce(m.data->>'ativo', 'true') <> 'false'
+      and (
+        m.data->>'codigo' = coalesce(p->>'microareaCodigo', regexp_replace(p->>'microarea', '\D', '', 'g'))
+        or lpad(regexp_replace(coalesce(m.data->>'codigo', ''), '\D', '', 'g'), 2, '0') =
+           lpad(coalesce(nullif(regexp_replace(coalesce(p->>'microareaCodigo', ''), '\D', '', 'g'), ''), regexp_replace(coalesce(p->>'microarea', ''), '\D', '', 'g')), 2, '0')
+      )
+    );
+  end if;
+  return false;
+end $$;
 
 create or replace function public.document_access(p_path text, p_data jsonb, writing boolean) returns boolean
 language plpgsql stable security definer set search_path = public
@@ -1358,6 +1366,15 @@ begin
     when v_data->>'perfil' = 'ADMIN' then nullif(trim(coalesce(v_data->>'unidadeId', '')), '')
     else public.normalize_unit_id(v_data->>'unidadeId')
   end;
+
+  if v_old_path = 'usuarios/' || v_uid
+     and v_data->>'uid' = v_uid
+     and v_data->>'authUid' = v_uid
+     and coalesce((v_data->>'authAtiva')::boolean, false) = true
+     and coalesce(v_data->>'unidadeId', '') is not distinct from coalesce(v_unit, '')
+  then
+    return v_data;
+  end if;
 
   v_data := v_data || jsonb_build_object(
     'uid', v_uid,

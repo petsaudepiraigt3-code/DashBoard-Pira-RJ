@@ -45,10 +45,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let alive = true;
+    let lastLoadedUid: string | null | undefined = undefined;
+    let inFlightUid: string | null | undefined = undefined;
 
     async function load(user: User | null) {
+      const targetUid = user?.id || null;
+      if (targetUid && (inFlightUid === targetUid || lastLoadedUid === targetUid)) {
+        return;
+      }
+      inFlightUid = targetUid;
       const version = ++generation.current;
       if (!user) {
+        lastLoadedUid = null;
+        inFlightUid = undefined;
         if (alive) {
           if (typeof window !== 'undefined') {
             if (isSupabaseConfigured) {
@@ -85,19 +94,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         let p: Record<string, any> | null = null;
 
-        // 1. Sempre tentar resolve_my_profile primeiro para garantir reconciliação de UID e unidadeId no PostgreSQL
+        // 1. Leitura direta rápida do perfil por chave primária (evita escrita/trigger desnecessária no banco a cada login)
         try {
-          const { data: resolved } = await supabase.rpc('resolve_my_profile');
-          if (resolved && typeof resolved === 'object' && !Array.isArray(resolved) && (resolved as any).perfil) {
-            p = resolved as Record<string, any>;
-          }
-        } catch {
-          // Ignorar erro de RPC e seguir para leitura direta do documento
-        }
-
-        if (!p || !p.perfil) {
           const profile = await getDoc(doc(db, 'usuarios', user.id));
           if (profile.exists()) p = profile.data();
+        } catch {
+          // Seguir para fallback
+        }
+
+        // 2. Caso o documento ainda não esteja reconciliado pelo UID ou sem unidadeId (para GERENTE/ACS), acionar resolve_my_profile
+        const rolePreview = String(p?.perfil || '').trim().toUpperCase();
+        const needsUnitResolution = (rolePreview === 'GERENTE' || rolePreview === 'ACS') && !p?.unidadeId && !p?.unidade_id;
+        if (!p || !p.perfil || needsUnitResolution) {
+          try {
+            const { data: resolved } = await supabase.rpc('resolve_my_profile');
+            if (resolved && typeof resolved === 'object' && !Array.isArray(resolved) && (resolved as any).perfil) {
+              p = resolved as Record<string, any>;
+            }
+          } catch {
+            // Ignorar erro de RPC e seguir para leitura da coleção
+          }
         }
 
         if (!p || !p.perfil) {
@@ -121,35 +137,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
         p.perfil = roleNorm;
 
-        if (p.perfil === 'GERENTE' && typeof window !== 'undefined') {
-          try {
-            const sessionRes = await supabase.auth.getSession();
-            const token = sessionRes.data.session?.access_token;
-            if (token) {
-              const recRes = await fetch('/api/admin/reconcile-manager', {
-                method: 'POST',
-                headers: { Authorization: `Bearer ${token}` },
-              });
-              if (recRes.ok) {
-                const recData = await recRes.json();
-                if (recData?.unitId) {
-                  p.unidadeId = recData.unitId;
-                }
-              }
-            }
-          } catch {
-            // Seguir com o unidadeId já resolvido localmente
-          }
-        }
-
         const rawUnitId = String(p.unidadeId || p.unidade_id || '').trim();
         const normalizedUnitId = normalizeUnitId(rawUnitId);
         const effectiveUnitId = p.perfil === 'ADMIN' ? (rawUnitId ? normalizedUnitId : 'USF-003') : normalizedUnitId;
 
+        const [allUnitsSnap, areasSnap] = await Promise.all([
+          getDocs(collection(db, 'unidades')).catch(() => null),
+          p.perfil === 'ACS' ? getDocs(collection(db, 'microareas')).catch(() => null) : Promise.resolve(null),
+        ]);
+
         const unitEntries: Array<{ id?: string; codigo?: string; nome?: string; nomeNormalizado?: string }> = [];
         let matchedUnitName: string | null = null;
-        try {
-          const allUnitsSnap = await getDocs(collection(db, 'unidades'));
+        if (allUnitsSnap) {
           allUnitsSnap.forEach((uDoc) => {
             const uData = uDoc.data();
             unitEntries.push({
@@ -169,8 +168,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (matchedUnitDoc?.data()?.nome) {
             matchedUnitName = String(matchedUnitDoc.data().nome);
           }
-        } catch {
-          // Fallback para leitura pontual da unidade
         }
 
         const unitAliasMap = buildUnitAliasMap(unitEntries);
@@ -183,15 +180,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
 
         let assignedCodes: string[] = [];
-        if (p.perfil === 'ACS') {
+        if (p.perfil === 'ACS' && areasSnap) {
           const acsIdentifiers = new Set(
             [user.id, p.uid, p.authUid]
               .map((v) => String(v || '').trim())
               .filter(Boolean)
           );
-          const areas = await getDocs(collection(db, 'microareas'));
           const codeSet = new Set<string>();
-          areas.docs.forEach((a) => {
+          areasSnap.docs.forEach((a) => {
             const mData = a.data();
             if (mData.ativo === false) return;
             const mAcsId = String(mData.acsId || '').trim();
@@ -200,7 +196,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             }
           });
           if (codeSet.size === 0 && Array.isArray(p.microareaIds)) {
-            areas.docs.forEach((a) => {
+            areasSnap.docs.forEach((a) => {
               const mData = a.data();
               if (mData.ativo === false) return;
               if (p.microareaIds.includes(a.id) || (mData.codigo && p.microareaIds.includes(mData.codigo))) {
@@ -212,6 +208,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
 
         if (alive && version === generation.current) {
+          lastLoadedUid = user.id;
+          inFlightUid = undefined;
           setState({
             user,
             loading: false,
@@ -230,6 +228,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       } catch (error) {
         if (alive && version === generation.current) {
+          lastLoadedUid = null;
+          inFlightUid = undefined;
           setState({
             user,
             userProfile: null,
@@ -240,7 +240,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     }
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'TOKEN_REFRESHED' && lastLoadedUid === (session?.user?.id || null)) {
+        return;
+      }
       setTimeout(() => { if (alive) void load(session?.user || null); }, 0);
     });
 

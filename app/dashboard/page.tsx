@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { AppLayout } from "@/components/layout/app-layout";
 import { CardIndicator } from "@/components/ui/card-indicator";
 import { BadgePriority } from "@/components/ui/badge-priority";
@@ -60,31 +60,39 @@ export default function DashboardPage() {
   useEffect(() => {
     if (authLoading || !userProfile) return;
     const profile = userProfile;
+    const activeUnit = profile.unitId || userUnitId;
+    let cancelled = false;
     async function loadPatients() {
       setLoadingPatients(true);
       const [realData, loadedParams] = await Promise.all([
         getAllPatientsFromStore({
           role: profile.role,
-          userUnitId: profile.unitId || userUnitId,
+          userUnitId: activeUnit,
           assignedMicroareaCodes: profile.role === "ACS" ? profile.assignedMicroareaCodes : undefined,
           acsName: profile.role === "ACS" ? profile.name : undefined,
           acsId: profile.role === "ACS" ? profile.uid : undefined,
         }),
         getDcntParametersFromStore(),
       ]);
-      setPatients(realData || []);
+      if (cancelled) return;
+      const loadedList = realData || [];
+      setPatients(loadedList);
       setDcntParams(loadedParams);
       setLoadingPatients(false);
+
+      if (activeUnit) {
+        getUnitAdministrativeDiagnostics(activeUnit, loadedList)
+          .then((diag) => {
+            if (!cancelled) setCoverageStats(diag);
+          })
+          .catch(() => {});
+      }
     }
     loadPatients();
+    return () => {
+      cancelled = true;
+    };
   }, [authLoading, userProfile?.role, userProfile?.unitId, userProfile?.uid, userProfile?.assignedMicroareaCodes?.join(",")]);
-
-  useEffect(() => {
-    const activeUnit = userProfile?.unitId || userUnitId;
-    if (activeUnit) {
-      getUnitAdministrativeDiagnostics(activeUnit).then(setCoverageStats).catch(() => {});
-    }
-  }, [userProfile?.unitId, userUnitId]);
 
   // Filtros Globais
   const [filterACS, setFilterACS] = useState("Todos");
@@ -247,17 +255,34 @@ export default function DashboardPage() {
     (p) => p.priority === "Alta" || p.priority === "Média" || p.priority === "Atenção"
   );
   const atencaoNecessaria = priorityFiltered.length > 0 ? priorityFiltered : filteredPatients;
+  const displayedAtencaoNecessaria = atencaoNecessaria.slice(0, 15);
+
+  const sortedPendingReturns = useMemo(
+    () => getSortedPendingReturns(filteredPatients),
+    [filteredPatients]
+  );
+  const pendingReturnsAtrasadosCount = useMemo(
+    () => sortedPendingReturns.filter((i) => i.status === "Atrasado").length,
+    [sortedPendingReturns]
+  );
+  const pendingReturnsHojeCount = useMemo(
+    () => sortedPendingReturns.filter((i) => i.status === "Hoje").length,
+    [sortedPendingReturns]
+  );
+  const pendingReturnsAgendadosCount = useMemo(
+    () => sortedPendingReturns.filter((i) => i.status === "Agendado").length,
+    [sortedPendingReturns]
+  );
 
   // Handler de Geração do Relatório Gerencial em PDF
   const handleGeneratePDF = () => {
     const now = new Date();
     const dateStr = `${now.getDate().toString().padStart(2, "0")}/${(now.getMonth() + 1).toString().padStart(2, "0")}/${now.getFullYear()} ${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`;
 
-    const sortedPending = getSortedPendingReturns(filteredPatients);
     const pendingReturns = {
-      atrasados: sortedPending.filter((i) => i.status === "Atrasado").length,
-      hoje: sortedPending.filter((i) => i.status === "Hoje").length,
-      agendados: sortedPending.filter((i) => i.status === "Agendado").length,
+      atrasados: pendingReturnsAtrasadosCount,
+      hoje: pendingReturnsHojeCount,
+      agendados: pendingReturnsAgendadosCount,
     };
 
     generateManagerPDFReport({
@@ -575,7 +600,7 @@ export default function DashboardPage() {
           </div>
         ) : (
         <div className="divide-y divide-zinc-100 dark:divide-zinc-800 overflow-x-auto">
-          {atencaoNecessaria.map((patient) => (
+          {displayedAtencaoNecessaria.map((patient) => (
             <div
               key={patient.id}
               onClick={() => router.push(`/pacientes/${patient.id}`)}
@@ -635,7 +660,7 @@ export default function DashboardPage() {
             <div>
               <span className="text-xs font-bold text-red-900 dark:text-red-300 block">Retornos Atrasados</span>
               <span className="text-2xl font-extrabold text-red-600 dark:text-red-400">
-                {getSortedPendingReturns(filteredPatients).filter((i) => i.status === "Atrasado").length}
+                {pendingReturnsAtrasadosCount}
               </span>
             </div>
             <AlertTriangle className="h-7 w-7 text-red-500 opacity-80" />
@@ -645,7 +670,7 @@ export default function DashboardPage() {
             <div>
               <span className="text-xs font-bold text-amber-900 dark:text-amber-300 block">Retornos para Hoje</span>
               <span className="text-2xl font-extrabold text-amber-600 dark:text-amber-400">
-                {getSortedPendingReturns(filteredPatients).filter((i) => i.status === "Hoje").length}
+                {pendingReturnsHojeCount}
               </span>
             </div>
             <Clock className="h-7 w-7 text-amber-500 opacity-80" />
@@ -655,7 +680,7 @@ export default function DashboardPage() {
             <div>
               <span className="text-xs font-bold text-blue-900 dark:text-blue-300 block">Próximos Retornos Agendados</span>
               <span className="text-2xl font-extrabold text-blue-600 dark:text-blue-400">
-                {getSortedPendingReturns(filteredPatients).filter((i) => i.status === "Agendado").length}
+                {pendingReturnsAgendadosCount}
               </span>
             </div>
             <Calendar className="h-7 w-7 text-blue-500 opacity-80" />
@@ -663,7 +688,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Tabela/Lista de Pendências de Retorno */}
-        {getSortedPendingReturns(filteredPatients).length === 0 ? (
+        {sortedPendingReturns.length === 0 ? (
           <div className="rounded-lg border border-dashed border-zinc-200 p-6 text-center text-xs font-semibold text-zinc-500 dark:border-zinc-800">
             Nenhuma pendência de retorno operacional registrada para os pacientes selecionados.
           </div>
@@ -682,7 +707,7 @@ export default function DashboardPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800 font-medium">
-                {getSortedPendingReturns(filteredPatients).map((item) => (
+                {sortedPendingReturns.slice(0, 50).map((item) => (
                   <tr key={`${item.patient.id}_${item.actionId}`} className="hover:bg-zinc-50 dark:hover:bg-zinc-800/40">
                     <td className="px-3 py-2.5">
                       <div className="flex items-center gap-1.5">

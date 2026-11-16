@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { AppLayout } from "@/components/layout/app-layout";
 import { CardIndicator } from "@/components/ui/card-indicator";
 import { BadgePriority } from "@/components/ui/badge-priority";
@@ -25,6 +25,10 @@ import {
   Check,
   RefreshCw,
   ClipboardList,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
 } from "lucide-react";
 
 export default function BuscaAtivaPage() {
@@ -37,6 +41,12 @@ export default function BuscaAtivaPage() {
   const [filterMicroarea, setFilterMicroarea] = useState("Todas");
   const [filterPriority, setFilterPriority] = useState<string>("Todas");
   const [filterCondition, setFilterCondition] = useState("Todas");
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, filterACS, filterMicroarea, filterPriority, filterCondition]);
 
   // Lista de pacientes (Supabase)
   const [patients, setPatients] = useState<Patient[]>([]);
@@ -132,6 +142,12 @@ export default function BuscaAtivaPage() {
 
     return true;
   });
+
+  const totalPages = Math.ceil(filteredPatients.length / pageSize) || 1;
+  const paginatedPatients = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredPatients.slice(start, start + pageSize);
+  }, [filteredPatients, currentPage, pageSize]);
 
   const handleOpenActionModal = (patient: Patient) => {
     if (role !== "ACS") {
@@ -396,14 +412,14 @@ export default function BuscaAtivaPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800 font-medium">
-              {filteredPatients.length === 0 ? (
+              {paginatedPatients.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="p-8 text-center text-zinc-500">
                     Nenhum paciente encontrado para os filtros selecionados.
                   </td>
                 </tr>
               ) : (
-                filteredPatients.map((p) => (
+                paginatedPatients.map((p) => (
                   <tr key={p.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-800/40 transition-colors">
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-1.5">
@@ -526,6 +542,84 @@ export default function BuscaAtivaPage() {
               )}
             </tbody>
           </table>
+        </div>
+
+        {/* Barra de Controles de Paginação */}
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 border-t border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900 text-xs">
+          <div className="flex flex-wrap items-center gap-3 text-zinc-500 dark:text-zinc-400">
+            <span>
+              Mostrando{" "}
+              <strong className="text-zinc-800 dark:text-zinc-200">
+                {filteredPatients.length === 0 ? 0 : (currentPage - 1) * pageSize + 1}
+              </strong>{" "}
+              a{" "}
+              <strong className="text-zinc-800 dark:text-zinc-200">
+                {Math.min(currentPage * pageSize, filteredPatients.length)}
+              </strong>{" "}
+              de{" "}
+              <strong className="text-zinc-800 dark:text-zinc-200">
+                {filteredPatients.length}
+              </strong>{" "}
+              pacientes
+            </span>
+
+            <div className="flex items-center gap-1.5">
+              <span>Por página:</span>
+              <select
+                value={pageSize}
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value));
+                  setCurrentPage(1);
+                }}
+                className="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-800 shadow-2xs dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 focus:outline-none cursor-pointer"
+              >
+                <option value={10}>10</option>
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setCurrentPage(1)}
+              disabled={currentPage <= 1}
+              className="rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 disabled:opacity-30 disabled:pointer-events-none dark:hover:bg-zinc-800 dark:text-zinc-400 transition-colors cursor-pointer"
+              title="Primeira página"
+            >
+              <ChevronsLeft className="h-4 w-4" />
+            </button>
+            <button
+              onClick={() => setCurrentPage((p) => Math.max(p - 1, 1))}
+              disabled={currentPage <= 1}
+              className="rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 disabled:opacity-30 disabled:pointer-events-none dark:hover:bg-zinc-800 dark:text-zinc-400 transition-colors cursor-pointer"
+              title="Página anterior"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+
+            <span className="px-3 py-1 font-semibold text-zinc-700 dark:text-zinc-300">
+              Página {currentPage} de {totalPages}
+            </span>
+
+            <button
+              onClick={() => setCurrentPage((p) => Math.min(p + 1, totalPages))}
+              disabled={currentPage >= totalPages}
+              className="rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 disabled:opacity-30 disabled:pointer-events-none dark:hover:bg-zinc-800 dark:text-zinc-400 transition-colors cursor-pointer"
+              title="Próxima página"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+            <button
+              onClick={() => setCurrentPage(totalPages)}
+              disabled={currentPage >= totalPages}
+              className="rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 disabled:opacity-30 disabled:pointer-events-none dark:hover:bg-zinc-800 dark:text-zinc-400 transition-colors cursor-pointer"
+              title="Última página"
+            >
+              <ChevronsRight className="h-4 w-4" />
+            </button>
+          </div>
         </div>
       </div>
 

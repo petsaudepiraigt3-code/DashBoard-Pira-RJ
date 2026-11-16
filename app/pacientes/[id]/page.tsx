@@ -4,6 +4,7 @@ import React, { use, useState, useEffect } from "react";
 import { AppLayout } from "@/components/layout/app-layout";
 import {
   getAllPatientsFromStore,
+  getPatientByIdFromStore,
   getPatientActionsFromStore,
   getPatientHistorySnapshotsFromStore,
   getPatientManagerObservationsFromStore,
@@ -59,12 +60,24 @@ export default function PacienteDetalhePage({
 
   useEffect(() => {
     async function loadData() {
-      const realData = await getAllPatientsFromStore({
+      if (!resolvedParams.id) return;
+      const singlePat = await getPatientByIdFromStore(resolvedParams.id, {
         role,
         userUnitId,
         assignedMicroareaCodes: userProfile?.assignedMicroareaCodes,
+        acsName: userProfile?.name,
+        acsId: userProfile?.uid,
       });
-      setPatients(realData);
+      if (singlePat) {
+        setPatients([singlePat]);
+      } else {
+        const realData = await getAllPatientsFromStore({
+          role,
+          userUnitId,
+          assignedMicroareaCodes: userProfile?.assignedMicroareaCodes,
+        });
+        setPatients(realData);
+      }
 
       if (resolvedParams.id) {
         try {

@@ -163,10 +163,16 @@ export interface FetchPatientsOptions {
 export async function getAllPatientsFromStore(options?: FetchPatientsOptions): Promise<Patient[]> {
   const list: Patient[] = [];
   try {
+    // Executar consultas independentes em paralelo para reduzir drasticamente a latência de carregamento
+    const [unitsSnap, maSnap, querySnapshot] = await Promise.all([
+      getDocs(collection(db, "unidades")).catch(() => null),
+      getDocs(collection(db, "microareas")).catch(() => null),
+      getDocs(collection(db, "pacientes")),
+    ]);
+
     // Mapeamento canônico de Unidades de Saúde (alinhado com normalize_unit_id do PostgreSQL)
     const unitEntries: Array<{ id?: string; codigo?: string; nome?: string; nomeNormalizado?: string }> = [];
-    try {
-      const unitsSnap = await getDocs(collection(db, "unidades"));
+    if (unitsSnap) {
       unitsSnap.forEach((uDoc) => {
         const uData = uDoc.data();
         unitEntries.push({
@@ -176,15 +182,12 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
           nomeNormalizado: uData.nomeNormalizado,
         });
       });
-    } catch {
-      // Ignorar caso não haja leitura de unidades
     }
     const unitAliasMap = buildUnitAliasMap(unitEntries);
 
     // Mapeamento de Microárea -> ACS responsável a partir da coleção 'microareas'
     const microareaAcsMap = new Map<string, string>();
-    try {
-      const maSnap = await getDocs(collection(db, "microareas"));
+    if (maSnap) {
       maSnap.forEach((mDoc) => {
         const mData = mDoc.data();
         if (mData.unidadeId && mData.codigo && mData.acsNome) {
@@ -196,8 +199,6 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
           microareaAcsMap.set(`${mUnit}_${mData.codigo}`, mData.acsNome);
         }
       });
-    } catch {
-      // Ignorar
     }
 
     const normalizedAssignedCodes = Array.isArray(options?.assignedMicroareaCodes)
@@ -211,7 +212,6 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
     const isGerente = String(options?.role || "").toUpperCase() === "GERENTE";
     const isAcs = String(options?.role || "").toUpperCase() === "ACS";
 
-    const querySnapshot = await getDocs(collection(db, "pacientes"));
     let rawDocs: Array<{ id: string; data: () => Record<string, any> }> = querySnapshot.docs;
 
     // Se o GERENTE recebeu 0 pacientes via RLS do cliente (ex.: divergência de unidadeId no perfil), reconciliar via servidor
@@ -495,6 +495,267 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
     console.error("Erro ao buscar pacientes no Store:", err);
   }
   return list;
+}
+
+export async function getPatientByIdFromStore(
+  patientId: string,
+  options?: FetchPatientsOptions
+): Promise<Patient | null> {
+  if (!patientId) return null;
+  try {
+    const [unitsSnap, maSnap, patSnap] = await Promise.all([
+      getDocs(collection(db, "unidades")).catch(() => null),
+      getDocs(collection(db, "microareas")).catch(() => null),
+      getDoc(doc(db, "pacientes", patientId)),
+    ]);
+
+    if (!patSnap.exists()) return null;
+
+    const unitEntries: Array<{ id?: string; codigo?: string; nome?: string; nomeNormalizado?: string }> = [];
+    if (unitsSnap) {
+      unitsSnap.forEach((uDoc) => {
+        const uData = uDoc.data();
+        unitEntries.push({
+          id: uDoc.id,
+          codigo: uData.codigo,
+          nome: uData.nome,
+          nomeNormalizado: uData.nomeNormalizado,
+        });
+      });
+    }
+    const unitAliasMap = buildUnitAliasMap(unitEntries);
+
+    const microareaAcsMap = new Map<string, string>();
+    if (maSnap) {
+      maSnap.forEach((mDoc) => {
+        const mData = mDoc.data();
+        if (mData.unidadeId && mData.codigo && mData.acsNome) {
+          const mUnit = resolveCanonicalUnitId(mData.unidadeId, unitAliasMap);
+          const cleanCode = (mData.codigo || "").replace(/\D/g, "").trim();
+          const paddedCode = cleanCode ? cleanCode.padStart(2, "0") : "";
+          if (cleanCode) microareaAcsMap.set(`${mUnit}_${cleanCode}`, mData.acsNome);
+          if (paddedCode) microareaAcsMap.set(`${mUnit}_${paddedCode}`, mData.acsNome);
+          microareaAcsMap.set(`${mUnit}_${mData.codigo}`, mData.acsNome);
+        }
+      });
+    }
+
+    const data = patSnap.data() as StorePatientDoc & {
+      unidadeId?: string;
+      unidadeNome?: string;
+      acsId?: string;
+      acsNome?: string;
+      microareaCodigo?: string;
+      dataUltimaVisita?: string;
+      dataUltimaConsulta?: string;
+    };
+
+    const pUnitId = resolveCanonicalUnitId(data.unidadeId || data.unidadeNome, unitAliasMap);
+    const pMicroarea = data.microarea || "Sem microárea";
+    const rawDigits =
+      (pMicroarea || "").replace(/\D/g, "").trim() ||
+      (data.microareaCodigo || "").replace(/\D/g, "").trim();
+    const patMACode = rawDigits ? rawDigits.padStart(2, "0") : data.microareaCodigo || "";
+
+    const maKey = `${pUnitId}_${patMACode}`;
+    const assignedAcsFromMA =
+      microareaAcsMap.get(maKey) ||
+      (rawDigits ? microareaAcsMap.get(`${pUnitId}_${rawDigits}`) : undefined) ||
+      (data.microareaCodigo ? microareaAcsMap.get(`${pUnitId}_${data.microareaCodigo}`) : undefined);
+
+    let resolvedACSName = "";
+    if (assignedAcsFromMA) {
+      resolvedACSName = assignedAcsFromMA;
+    } else if (data.acsNome && data.acsNome !== "Agente Comunitário") {
+      resolvedACSName = data.acsNome;
+    } else if (options?.role === "ACS" && options?.acsName) {
+      resolvedACSName = options.acsName;
+    } else {
+      resolvedACSName = "Sem ACS responsável";
+    }
+
+    const ageVal = data.idade || 0;
+    const imcVal = data.imcAtual;
+    const hasValidIMC = typeof imcVal === "number" && !isNaN(imcVal) && imcVal > 0;
+    const isAdult = ageVal >= 20;
+    const isObese = isAdult && hasValidIMC && imcVal >= 30;
+    const isOverweight = isAdult && hasValidIMC && imcVal >= 25 && imcVal < 30;
+
+    const rawHistorico: PatientActionRecord[] = (data as any).historicoAcoes || [];
+    const computedTimeline = rawHistorico.map((act) => ({
+      id: act.id,
+      date: act.dataAcao,
+      type: (act.tipoAcao === "Visita Domiciliar" ? "Visita ACS" : act.tipoAcao === "Contato Telefônico" ? "Contato Telefônico" : "Busca Ativa") as any,
+      title: `Registro de ${act.tipoAcao}`,
+      description: `${act.resultado}${act.observacoes ? `. OBS: ${act.observacoes}` : ""}`,
+      professional: act.acsNome || "Profissional de Saúde",
+    }));
+
+    const lastVisitDate = computeConsolidatedLastVisitDate(data);
+    const lastMedicalApptDate = data.dataUltimaConsulta || undefined;
+
+    const historicoCargas = (data as any).historicoCargas || [];
+    const extractedPAHistory: PAMeasurement[] = [];
+    const extractedWeightHistory: WeightMeasurement[] = [];
+
+    historicoCargas.forEach((c: PatientCargaSnapshot) => {
+      if (c.pressaoSistolica && c.pressaoDiastolica) {
+        extractedPAHistory.push({
+          id: `pa-${c.id}`,
+          date: c.dataPA || (c.dataCarga ? c.dataCarga.substring(0, 10) : ""),
+          systolic: c.pressaoSistolica,
+          diastolic: c.pressaoDiastolica,
+          location: "e-SUS APS",
+        });
+      }
+      if (c.peso && c.altura) {
+        extractedWeightHistory.push({
+          id: `w-${c.id}`,
+          date: c.dataAntropometria || (c.dataCarga ? c.dataCarga.substring(0, 10) : ""),
+          weight: c.peso,
+          height: c.altura,
+          imc: c.imc || Number((c.peso / (c.altura * c.altura)).toFixed(2)),
+        });
+      }
+    });
+
+    if (data.pressaoSistolicaAtual && data.pressaoDiastolicaAtual) {
+      const currentDate = data.dataUltimaPA || new Date().toISOString().substring(0, 10);
+      if (!extractedPAHistory.some((h) => h.date === currentDate)) {
+        extractedPAHistory.push({
+          id: `pa-current-${patSnap.id}`,
+          date: currentDate,
+          systolic: data.pressaoSistolicaAtual,
+          diastolic: data.pressaoDiastolicaAtual,
+          location: "e-SUS APS",
+        });
+      }
+    }
+
+    if (data.pesoAtual && data.alturaAtual) {
+      const currentDate = data.dataUltimaAntropometria || new Date().toISOString().substring(0, 10);
+      if (!extractedWeightHistory.some((h) => h.date === currentDate)) {
+        extractedWeightHistory.push({
+          id: `w-current-${patSnap.id}`,
+          date: currentDate,
+          weight: data.pesoAtual,
+          height: data.alturaAtual,
+          imc: data.imcAtual || Number((data.pesoAtual / (data.alturaAtual * data.alturaAtual)).toFixed(2)),
+        });
+      }
+    }
+
+    extractedPAHistory.sort((a, b) => a.date.localeCompare(b.date));
+    extractedWeightHistory.sort((a, b) => a.date.localeCompare(b.date));
+
+    const explicitCell =
+      data.telefoneCelular ||
+      data.telefone_celular ||
+      (data as any)["Telefone celular"] ||
+      "";
+    const hasSplitPhoneFields =
+      "telefoneCelular" in data ||
+      "telefone_celular" in data ||
+      "telefoneResidencial" in data ||
+      "telefoneContato" in data;
+    const legacyCellFallback = !hasSplitPhoneFields ? (data.telefone || "") : "";
+    const resolvedPhoneCell = explicitCell || legacyCellFallback || undefined;
+
+    const resolvedPhone =
+      resolvedPhoneCell ||
+      data.telefone ||
+      data.telefoneContato ||
+      data.telefoneResidencial ||
+      data.telefoneOriginal ||
+      "";
+
+    const rawObservacoesGerente: ManagerObservationRecord[] = Array.isArray((data as any).observacoesGerente)
+      ? [...(data as any).observacoesGerente].sort((a, b) => (b.updatedAt || b.createdAt || "").localeCompare(a.updatedAt || a.createdAt || ""))
+      : [];
+    const rawHistoricoObsGerente: ManagerObservationRevision[] = Array.isArray((data as any).historicoObservacoesGerente)
+      ? [...(data as any).historicoObservacoesGerente].sort((a, b) => (b.dataRegistro || "").localeCompare(a.dataRegistro || ""))
+      : [];
+    const resolvedObservacaoAtual: ManagerObservationRecord | null =
+      (data as any).observacaoGerenteAtual || rawObservacoesGerente[0] || null;
+
+    return {
+      id: patSnap.id,
+      name: data.nome,
+      cpf: data.cpf || "Sem CPF",
+      cns: data.cns || "Sem CNS",
+      birthDate: data.dataNascimento || undefined,
+      age: data.idade || 0,
+      sex: data.sexo || "Feminino",
+      genderIdentity: data.identidadeGenero || undefined,
+      raceColor: data.racaCor || undefined,
+      bolsaFamilia: data.beneficiarioBolsaFamilia ?? undefined,
+      bolsaFamiliaValidity: data.vigenciaBolsaFamilia || undefined,
+      phone: resolvedPhone,
+      phoneCell: resolvedPhoneCell,
+      phoneHome: data.telefoneResidencial || undefined,
+      phoneContact: data.telefoneContato || undefined,
+      street: data.logradouro || undefined,
+      number: data.numero || undefined,
+      complement: data.complemento || undefined,
+      neighborhood: data.bairro || undefined,
+      city: data.municipio || undefined,
+      state: data.uf || undefined,
+      zipCode: data.cep || undefined,
+      unit: data.unidadeNome || MOCK_UNIT_NAME,
+      unidadeId: pUnitId,
+      unidadeNome: data.unidadeNome || MOCK_UNIT_NAME,
+      microarea: pMicroarea,
+      microareaCodigo: patMACode || undefined,
+      acsName: resolvedACSName,
+      isElderly: (data.idade || 0) >= 60,
+      isChildUnder2: data.idade !== null && data.idade !== undefined && data.idade >= 0 && data.idade <= 2,
+      hasHypertension: data.hasHypertension || (data.pressaoSistolicaAtual && data.pressaoSistolicaAtual >= 140) || false,
+      hasDiabetes: data.hasDiabetes || false,
+      isObese,
+      isOverweight,
+      isSmoker: data.isSmoker || false,
+      hasCardiovascularDisease: data.hasCardiovascularDisease || false,
+      lastPA: data.pressaoSistolicaAtual && data.pressaoDiastolicaAtual ? {
+        id: `pa-${patSnap.id}`,
+        date: data.dataUltimaPA || new Date().toISOString().substring(0, 10),
+        systolic: data.pressaoSistolicaAtual,
+        diastolic: data.pressaoDiastolicaAtual,
+        location: "e-SUS APS",
+      } : undefined,
+      lastWeight: data.pesoAtual && data.alturaAtual ? {
+        id: `w-${patSnap.id}`,
+        date: data.dataUltimaAntropometria || new Date().toISOString().substring(0, 10),
+        weight: data.pesoAtual,
+        height: data.alturaAtual,
+        imc: data.imcAtual || 0,
+      } : undefined,
+      lastVisitDate: lastVisitDate || "",
+      lastMedicalApptDate: lastMedicalApptDate || "",
+      lastNursingApptDate: data.dataUltimoAtendimentoEnfermagem || "",
+      lastDentalApptDate: data.dataUltimoAtendimentoOdontologico || "",
+      daysSinceMedicalCare: data.daysSinceMedicalCare ?? undefined,
+      monthsSinceMedicalCare: data.monthsSinceMedicalCare ?? undefined,
+      daysSinceNursingCare: data.daysSinceNursingCare ?? undefined,
+      monthsSinceNursingCare: data.monthsSinceNursingCare ?? undefined,
+      daysSinceDentalCare: data.daysSinceDentalCare ?? undefined,
+      monthsSinceDentalCare: data.monthsSinceDentalCare ?? undefined,
+      daysSinceHomeVisit: data.daysSinceHomeVisit ?? undefined,
+      monthsSinceHomeVisit: data.monthsSinceHomeVisit ?? undefined,
+      priority: data.prioridade,
+      activeSearchReason: data.motivosPrioridade || undefined,
+      activeSearchStatus: data.prioridade === "Alta" ? "Pendente" : "Acompanhado",
+      paHistory: extractedPAHistory,
+      weightHistory: extractedWeightHistory,
+      timeline: computedTimeline,
+      historicoAcoes: rawHistorico,
+      historicoCargas: historicoCargas,
+      observacaoGerenteAtual: resolvedObservacaoAtual,
+      observacoesGerente: rawObservacoesGerente,
+      historicoObservacoesGerente: rawHistoricoObsGerente,
+    };
+  } catch {
+    return null;
+  }
 }
 
 // 3. Salvar Acompanhamento/Ação real no Store
