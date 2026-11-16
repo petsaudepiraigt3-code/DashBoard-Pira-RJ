@@ -207,12 +207,51 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
         })
       : undefined;
 
-    const targetUnitId = options?.userUnitId ? resolveCanonicalUnitId(options.userUnitId, unitAliasMap) : null;
-    const isGerente = options?.role === "GERENTE";
-    const isAcs = options?.role === "ACS";
+    let targetUnitId = options?.userUnitId ? resolveCanonicalUnitId(options.userUnitId, unitAliasMap) : null;
+    const isGerente = String(options?.role || "").toUpperCase() === "GERENTE";
+    const isAcs = String(options?.role || "").toUpperCase() === "ACS";
 
     const querySnapshot = await getDocs(collection(db, "pacientes"));
-    querySnapshot.forEach((docSnap) => {
+    let rawDocs: Array<{ id: string; data: () => Record<string, any> }> = querySnapshot.docs;
+
+    // Se o GERENTE recebeu 0 pacientes via RLS do cliente (ex.: divergência de unidadeId no perfil), reconciliar via servidor
+    if (isGerente && rawDocs.length === 0 && typeof window !== "undefined") {
+      try {
+        const sessionRes = await supabase.auth?.getSession?.();
+        const token = sessionRes?.data?.session?.access_token;
+        if (token) {
+          const recRes = await fetch("/api/admin/reconcile-manager", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (recRes.ok) {
+            const recData = await recRes.json();
+            if (recData?.unitId) {
+              targetUnitId = resolveCanonicalUnitId(recData.unitId, unitAliasMap);
+            }
+            if (Array.isArray(recData?.patients) && recData.patients.length > 0) {
+              rawDocs = recData.patients.map((item: { id: string; data: Record<string, any> }) => ({
+                id: item.id,
+                data: () => item.data || {},
+              }));
+            }
+          }
+        }
+      } catch {
+        // Ignorar caso rota de reconciliação não esteja disponível
+      }
+    }
+
+    const gerenteHasDirectUnitMatch =
+      isGerente && targetUnitId
+        ? rawDocs.some((d) => {
+            const dData = d.data();
+            const dUnit = resolveCanonicalUnitId(dData.unidadeId || dData.unidadeNome, unitAliasMap);
+            return dUnit.toUpperCase() === targetUnitId!.toUpperCase();
+          })
+        : false;
+
+    rawDocs.forEach((docSnap) => {
       const data = docSnap.data() as StorePatientDoc & {
         unidadeId?: string;
         unidadeNome?: string;
@@ -223,7 +262,7 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
         dataUltimaConsulta?: string;
       };
 
-      const pUnitId = resolveCanonicalUnitId(data.unidadeId, unitAliasMap);
+      const pUnitId = resolveCanonicalUnitId(data.unidadeId || data.unidadeNome, unitAliasMap);
       const pMicroarea = data.microarea || "Sem microárea";
       const rawDigits =
         (pMicroarea || "").replace(/\D/g, "").trim() ||
@@ -247,7 +286,7 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
           }
         }
       } else if (isGerente) {
-        if (targetUnitId && pUnitId.toUpperCase() !== targetUnitId.toUpperCase()) {
+        if (targetUnitId && gerenteHasDirectUnitMatch && pUnitId.toUpperCase() !== targetUnitId.toUpperCase()) {
           return;
         }
       }

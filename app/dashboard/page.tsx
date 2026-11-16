@@ -122,19 +122,11 @@ export default function DashboardPage() {
 
   // Lista dinâmica de ACS e Microáreas da unidade para filtros do Gerente e Admin
   const availableACSList = Array.from(
-    new Set(
-      patients
-        .filter((p) => role !== "GERENTE" || !normUnitId || normalizeUnitId((p as any).unidadeId).toUpperCase() === normUnitId.toUpperCase())
-        .map((p) => p.acsName)
-    )
+    new Set(patients.map((p) => p.acsName))
   ).filter(Boolean).sort();
 
   const availableMicroareasList = Array.from(
-    new Set(
-      patients
-        .filter((p) => role !== "GERENTE" || !normUnitId || normalizeUnitId((p as any).unidadeId).toUpperCase() === normUnitId.toUpperCase())
-        .map((p) => p.microarea)
-    )
+    new Set(patients.map((p) => p.microarea))
   ).filter(Boolean).sort();
 
   const normalizedAcsCodes = (userProfile?.assignedMicroareaCodes || []).map((c) => {
@@ -142,12 +134,9 @@ export default function DashboardPage() {
     return d ? d.padStart(2, "0") : String(c || "").trim();
   });
 
-  // Filtragem dos pacientes considerando perfil e unidade
+  // Filtragem dos pacientes considerando perfil e filtros selecionados
   const filteredPatients = patients.filter((pat: any) => {
     const pUnitId = normalizeUnitId(pat.unidadeId);
-    if (role === "GERENTE" && normUnitId) {
-      if (pUnitId.toUpperCase() !== normUnitId.toUpperCase()) return false;
-    }
     if (role === "ACS") {
       if (normUnitId && pUnitId.toUpperCase() !== normUnitId.toUpperCase()) return false;
       const rawDigits = (pat.microarea || "").replace(/\D/g, "").trim() || (pat.microareaCodigo || "").replace(/\D/g, "").trim();
@@ -253,10 +242,11 @@ export default function DashboardPage() {
     { label: "Doença Cardiovascular", value: filteredPatients.filter((p) => p.hasCardiovascularDisease).length, color: "bg-rose-600" },
   ];
 
-  // Atenção Necessária
-  const atencaoNecessaria = filteredPatients.filter(
-    (p) => p.priority === "Alta" || p.priority === "Média"
+  // Atenção Necessária (priorizando Alta/Média/Atenção; se todos estiverem Acompanhados, exibe os pacientes da unidade)
+  const priorityFiltered = filteredPatients.filter(
+    (p) => p.priority === "Alta" || p.priority === "Média" || p.priority === "Atenção"
   );
+  const atencaoNecessaria = priorityFiltered.length > 0 ? priorityFiltered : filteredPatients;
 
   // Handler de Geração do Relatório Gerencial em PDF
   const handleGeneratePDF = () => {
@@ -579,6 +569,11 @@ export default function DashboardPage() {
           </button>
         </div>
 
+        {atencaoNecessaria.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-zinc-200 p-6 text-center text-xs font-semibold text-zinc-500 dark:border-zinc-800">
+            Nenhum paciente encontrado para os filtros selecionados nesta unidade.
+          </div>
+        ) : (
         <div className="divide-y divide-zinc-100 dark:divide-zinc-800 overflow-x-auto">
           {atencaoNecessaria.map((patient) => (
             <div
@@ -617,6 +612,7 @@ export default function DashboardPage() {
             </div>
           ))}
         </div>
+        )}
       </div>
 
       {/* SEÇÃO COMPLEMENTAR: PRÓXIMOS RETORNOS / PENDÊNCIAS DO ACS */}

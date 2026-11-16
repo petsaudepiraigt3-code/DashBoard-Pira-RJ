@@ -256,19 +256,22 @@ export default function ConfiguracoesPage() {
       const { data: rpcUsers, error: rpcErr } = await supabase.rpc("list_managed_users");
       if (!rpcErr && Array.isArray(rpcUsers) && rpcUsers.length > 0) {
         setAllUsers(
-          rpcUsers.map((u: any) => ({
-            uid: u.uid || u.auth_uid,
-            docId: u.uid,
-            nome: u.nome || "Usuário",
-            email: u.email,
-            perfil: u.perfil,
-            unidadeId: u.unidade_id ? normalizeUnitId(u.unidade_id) : undefined,
-            microareaIds: u.microarea_ids || [],
-            authStatus: u.auth_status || (u.auth_uid ? "AUTH_OK" : "AUTH_INEXISTENTE"),
-            authUid: u.auth_uid || u.uid,
-            authAtiva: u.ativo !== false,
-            ativo: u.ativo !== false,
-          }))
+          rpcUsers.map((u: any) => {
+            const rawUnit = u.unidadeId || u.unidade_id;
+            return {
+              uid: u.uid || u.authUid || u.auth_uid,
+              docId: u.docId || u.uid,
+              nome: u.nome || "Usuário",
+              email: u.email,
+              perfil: u.perfil,
+              unidadeId: rawUnit ? normalizeUnitId(rawUnit) : undefined,
+              microareaIds: u.microareaIds || u.microarea_ids || [],
+              authStatus: u.authStatus || u.auth_status || (u.authUid || u.auth_uid ? "AUTH_OK" : "AUTH_INEXISTENTE"),
+              authUid: u.authUid || u.auth_uid || u.uid,
+              authAtiva: u.ativo !== false,
+              ativo: u.ativo !== false,
+            };
+          })
         );
         return;
       }

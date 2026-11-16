@@ -45,20 +45,18 @@ export default function LoginPage() {
           return;
         }
 
-        let profile = await getDoc(doc(db, 'usuarios', data.user.id));
-        let p = profile.exists() ? profile.data() : null;
-        if (!p || !['ADMIN', 'GERENTE', 'ACS'].includes(p.perfil) || (p.perfil !== 'ADMIN' && !p.unidadeId)) {
-          try {
-            const { data: resolvedProfile } = await supabase.rpc('resolve_my_profile');
-            if (resolvedProfile && typeof resolvedProfile === 'object' && !Array.isArray(resolvedProfile)) {
-              p = resolvedProfile as Record<string, any>;
-            } else {
-              profile = await getDoc(doc(db, 'usuarios', data.user.id));
-              if (profile.exists()) p = profile.data();
-            }
-          } catch {
-            // Ignorar falha de RPC e tentar leitura direta por coleção abaixo
+        let p: Record<string, any> | null = null;
+        try {
+          const { data: resolvedProfile } = await supabase.rpc('resolve_my_profile');
+          if (resolvedProfile && typeof resolvedProfile === 'object' && !Array.isArray(resolvedProfile) && (resolvedProfile as any).perfil) {
+            p = resolvedProfile as Record<string, any>;
           }
+        } catch {
+          // Ignorar falha de RPC e tentar leitura direta
+        }
+        if (!p || !p.perfil) {
+          const profile = await getDoc(doc(db, 'usuarios', data.user.id));
+          if (profile.exists()) p = profile.data();
         }
         if (!p || !p.perfil) {
           const userDocs = await getDocs(collection(db, 'usuarios'));
@@ -73,7 +71,8 @@ export default function LoginPage() {
           });
           if (matchedDoc) p = matchedDoc.data();
         }
-        if (p && p.ativo !== false && ['ADMIN', 'GERENTE', 'ACS'].includes(p.perfil)) {
+        const roleNorm = String(p?.perfil || '').trim().toUpperCase();
+        if (p && p.ativo !== false && ['ADMIN', 'GERENTE', 'ACS'].includes(roleNorm)) {
           router.replace('/dashboard');
           return;
         }

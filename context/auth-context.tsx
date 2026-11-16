@@ -83,22 +83,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       try {
-        let profile = await getDoc(doc(db, 'usuarios', user.id));
-        let p = profile.exists() ? profile.data() : null;
+        let p: Record<string, any> | null = null;
 
-        // Se o documento não estava em usuarios/<auth.uid()> ou estava sem unidadeId, reconciliar via RPC
-        if (!p || !p.perfil || (p.perfil !== 'ADMIN' && !p.unidadeId)) {
-          try {
-            const { data: resolved } = await supabase.rpc('resolve_my_profile');
-            if (resolved && typeof resolved === 'object' && !Array.isArray(resolved)) {
-              p = resolved as Record<string, any>;
-            } else {
-              profile = await getDoc(doc(db, 'usuarios', user.id));
-              if (profile.exists()) p = profile.data();
-            }
-          } catch {
-            // Ignorar erro de RPC e tentar leitura direta por coleção abaixo
+        // 1. Sempre tentar resolve_my_profile primeiro para garantir reconciliação de UID e unidadeId no PostgreSQL
+        try {
+          const { data: resolved } = await supabase.rpc('resolve_my_profile');
+          if (resolved && typeof resolved === 'object' && !Array.isArray(resolved) && (resolved as any).perfil) {
+            p = resolved as Record<string, any>;
           }
+        } catch {
+          // Ignorar erro de RPC e seguir para leitura direta do documento
+        }
+
+        if (!p || !p.perfil) {
+          const profile = await getDoc(doc(db, 'usuarios', user.id));
+          if (profile.exists()) p = profile.data();
         }
 
         if (!p || !p.perfil) {
@@ -116,11 +115,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (matchedDoc) p = matchedDoc.data();
         }
 
-        if (!p || !p.perfil || p.ativo === false || !['ADMIN', 'GERENTE', 'ACS'].includes(p.perfil)) {
+        const roleNorm = String(p?.perfil || '').trim().toUpperCase();
+        if (!p || !roleNorm || p.ativo === false || !['ADMIN', 'GERENTE', 'ACS'].includes(roleNorm)) {
           throw new Error('Seu acesso está inativo ou sem perfil. Contate o administrador.');
         }
+        p.perfil = roleNorm;
 
-        const rawUnitId = String(p.unidadeId || '').trim();
+        if (p.perfil === 'GERENTE' && typeof window !== 'undefined') {
+          try {
+            const sessionRes = await supabase.auth.getSession();
+            const token = sessionRes.data.session?.access_token;
+            if (token) {
+              const recRes = await fetch('/api/admin/reconcile-manager', {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${token}` },
+              });
+              if (recRes.ok) {
+                const recData = await recRes.json();
+                if (recData?.unitId) {
+                  p.unidadeId = recData.unitId;
+                }
+              }
+            }
+          } catch {
+            // Seguir com o unidadeId já resolvido localmente
+          }
+        }
+
+        const rawUnitId = String(p.unidadeId || p.unidade_id || '').trim();
         const normalizedUnitId = normalizeUnitId(rawUnitId);
         const effectiveUnitId = p.perfil === 'ADMIN' ? (rawUnitId ? normalizedUnitId : 'USF-003') : normalizedUnitId;
 

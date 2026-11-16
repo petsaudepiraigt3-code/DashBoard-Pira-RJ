@@ -17,6 +17,8 @@ function createMaintenanceClient(db, ids) {
       let headOnly = false;
       let wantCount = false;
       let insertPayload = null;
+      let offset = 0;
+      let size = null;
       const conditions = [];
       const values = [];
 
@@ -34,6 +36,19 @@ function createMaintenanceClient(db, ids) {
         insert(payload) {
           mode = 'insert';
           insertPayload = payload;
+          return builder;
+        },
+        upsert(payload) {
+          mode = 'upsert';
+          insertPayload = payload;
+          return builder;
+        },
+        order() {
+          return builder;
+        },
+        range(start, end) {
+          offset = start;
+          size = end - start + 1;
           return builder;
         },
         eq(field, value) {
@@ -58,15 +73,19 @@ function createMaintenanceClient(db, ids) {
         async then(resolve) {
           try {
             const whereClause = conditions.length ? ` where ${conditions.join(' and ')}` : '';
-            if (mode === 'insert') {
+            if (mode === 'insert' || mode === 'upsert') {
               const cols = Object.keys(insertPayload);
               const vals = cols.map((c) => {
                 const v = insertPayload[c];
                 return v !== null && typeof v === 'object' ? JSON.stringify(v) : v;
               });
               const placeholders = cols.map((_, i) => `$${i + 1}`).join(',');
+              const conflictClause =
+                mode === 'upsert' && table === 'app_documents'
+                  ? ' on conflict ("path") do update set "data" = excluded."data", "updated_at" = excluded."updated_at"'
+                  : '';
               await db.query(
-                `insert into "${table}" (${cols.map((c) => `"${c}"`).join(',')}) values (${placeholders})`,
+                `insert into "${table}" (${cols.map((c) => `"${c}"`).join(',')}) values (${placeholders})${conflictClause}`,
                 vals
               );
               return resolve({ data: null, error: null });
@@ -79,7 +98,8 @@ function createMaintenanceClient(db, ids) {
               const { rows } = await db.query(`select count(*)::int as c from "${table}"${whereClause}`, values);
               return resolve({ data: null, count: rows[0].c, error: null });
             }
-            const { rows } = await db.query(`select * from "${table}"${whereClause}`, values);
+            const limitClause = size === null ? '' : ` order by 1 limit ${size} offset ${offset}`;
+            const { rows } = await db.query(`select * from "${table}"${whereClause}${limitClause}`, values);
             return resolve({ data: builder._single ? rows[0] || null : rows, error: null });
           } catch (error) {
             return resolve({ data: null, count: null, error });
@@ -216,6 +236,32 @@ test('admin maintenance deletes all patients and import history while enforcing 
     await h.db.exec('set role service_role');
     assert.equal((await h.db.query("select count(*)::int as n from app_documents where path like 'pacientes/%'")).rows[0].n, 0);
     assert.equal((await h.db.query("select count(*)::int as n from app_documents where path like 'imports/%'")).rows[0].n, 0);
+
+    // 5. Verify manager unit reconciliation when manager has mismatched unidadeId
+    await h.seed('pacientes/p-mgr-1', { nome: 'Paciente Ativo 1', unidadeId: 'USF-003', microareaCodigo: '56' });
+    await h.seed('pacientes/p-mgr-2', { nome: 'Paciente Ativo 2', unidadeId: 'USF-003', microareaCodigo: '01' });
+    await h.db.query(
+      "update app_documents set data = jsonb_set(data, '{unidadeId}', '\"UNIDADE_ANTIGA\"') where path = $1",
+      ['usuarios/' + h.ids.manager]
+    );
+
+    const { handleReconcileManager } = h.load('lib/reconcile-manager-server.ts');
+    const recRes = await handleReconcileManager(
+      new Request('http://localhost/api/admin/reconcile-manager', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer manager' },
+      })
+    );
+    assert.equal(recRes.status, 200);
+    const recBody = await recRes.json();
+    assert.equal(recBody.unitId, 'USF-003');
+    assert.equal(recBody.patients.length, 2);
+
+    // After reconciliation, manager can read patients directly through PostgreSQL RLS
+    await h.as('manager');
+    const patientsStore = h.load('lib/store/patients.ts');
+    const managerPatients = await patientsStore.getAllPatientsFromStore({ role: 'GERENTE', userUnitId: 'USF-003' });
+    assert.equal(managerPatients.length, 2);
   } finally {
     if (env.url === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_URL;
     else process.env.NEXT_PUBLIC_SUPABASE_URL = env.url;

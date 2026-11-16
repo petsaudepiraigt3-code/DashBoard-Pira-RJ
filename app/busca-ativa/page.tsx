@@ -90,27 +90,16 @@ export default function BuscaAtivaPage() {
 
   // Lista dinâmica de ACS e Microáreas da unidade para filtros do Gerente e Admin
   const availableACSList = Array.from(
-    new Set(
-      patients
-        .filter((p) => role !== "GERENTE" || !normUnitId || normalizeUnitId((p as any).unidadeId).toUpperCase() === normUnitId.toUpperCase())
-        .map((p) => p.acsName)
-    )
+    new Set(patients.map((p) => p.acsName))
   ).filter(Boolean).sort();
 
   const availableMicroareasList = Array.from(
-    new Set(
-      patients
-        .filter((p) => role !== "GERENTE" || !normUnitId || normalizeUnitId((p as any).unidadeId).toUpperCase() === normUnitId.toUpperCase())
-        .map((p) => p.microarea)
-    )
+    new Set(patients.map((p) => p.microarea))
   ).filter(Boolean).sort();
 
   // Filtragem dos Pacientes da Busca Ativa
   const filteredPatients = patients.filter((p) => {
     const pUnitId = normalizeUnitId((p as any).unidadeId);
-    if (role === "GERENTE" && normUnitId) {
-      if (pUnitId.toUpperCase() !== normUnitId.toUpperCase()) return false;
-    }
     if (role === "ACS") {
       if (normUnitId && pUnitId.toUpperCase() !== normUnitId.toUpperCase()) return false;
       const acsCodes = (userProfile?.assignedMicroareaCodes || []).map((c) => {

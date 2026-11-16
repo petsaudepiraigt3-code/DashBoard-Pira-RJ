@@ -304,7 +304,9 @@ export async function ensureUnitMicroareaInStore(
 
 // 5. Buscar todas as Microáreas de uma Unidade com desduplicação
 export async function getMicroareasByUnit(unidadeId: string): Promise<MicroareaDoc[]> {
-  const normUnitId = normalizeUnitId(unidadeId);
+  const units = await getAllActiveUnitsFromStore().catch(() => []);
+  const aliasMap = buildUnitAliasMap(units);
+  const normUnitId = resolveCanonicalUnitId(unidadeId, aliasMap);
   const maMap = new Map<string, MicroareaDoc>();
 
   try {
@@ -313,8 +315,8 @@ export async function getMicroareasByUnit(unidadeId: string): Promise<MicroareaD
     querySnapshot.forEach((docSnap) => {
       const data = docSnap.data() as Partial<MicroareaDoc>;
       const rawUnit = data.unidadeId || (docSnap.id.startsWith("ma_") ? docSnap.id.split("_")[1] : "");
-      const docUnitId = normalizeUnitId(rawUnit);
-      if (docUnitId !== normUnitId) return;
+      const docUnitId = resolveCanonicalUnitId(rawUnit, aliasMap);
+      if (docUnitId.toUpperCase() !== normUnitId.toUpperCase()) return;
 
       const digits = (data.codigo || "").replace(/\D/g, "").trim();
       const cleanCode = digits ? digits.padStart(2, "0") : data.codigo || docSnap.id;
@@ -472,7 +474,9 @@ export async function assignAcsToMicroarea(
 
 // 7. Buscar todos os Perfis ACS de uma Unidade com desduplicação rigorosa por e-mail e UID
 export async function getAcsUsersByUnit(unidadeId: string): Promise<UserProfileDoc[]> {
-  const normUnitId = normalizeUnitId(unidadeId);
+  const units = await getAllActiveUnitsFromStore().catch(() => []);
+  const aliasMap = buildUnitAliasMap(units);
+  const normUnitId = resolveCanonicalUnitId(unidadeId, aliasMap);
   const mapByEmail = new Map<string, UserProfileDoc>();
 
   try {
@@ -481,8 +485,8 @@ export async function getAcsUsersByUnit(unidadeId: string): Promise<UserProfileD
 
     querySnapshot.forEach((docSnap) => {
       const raw = docSnap.data();
-      const userUnit = normalizeUnitId(raw.unidadeId);
-      if (userUnit !== normUnitId) return;
+      const userUnit = resolveCanonicalUnitId(raw.unidadeId || raw.unidade_id, aliasMap);
+      if (userUnit.toUpperCase() !== normUnitId.toUpperCase()) return;
 
       const data = {
         ...raw,
@@ -583,14 +587,16 @@ export const createAcsUser = (data: { nome: string; email: string; unidadeId: st
 
 // 11. Obter mapa com a contagem real de pacientes por Microárea (derivado de paciente.microarea)
 export async function getPatientCountMapByMicroarea(unidadeId: string): Promise<Record<string, number>> {
-  const normUnitId = normalizeUnitId(unidadeId);
+  const units = await getAllActiveUnitsFromStore().catch(() => []);
+  const aliasMap = buildUnitAliasMap(units);
+  const normUnitId = resolveCanonicalUnitId(unidadeId, aliasMap);
   const countMap: Record<string, number> = {};
   try {
     const pSnap = await getDocs(collection(db, "pacientes"));
     pSnap.forEach((docSnap) => {
       const d = docSnap.data();
-      const patUnit = normalizeUnitId(d.unidadeId);
-      if (patUnit === normUnitId) {
+      const patUnit = resolveCanonicalUnitId(d.unidadeId || d.unidadeNome, aliasMap);
+      if (patUnit.toUpperCase() === normUnitId.toUpperCase()) {
         const rawMA = d.microarea || "Não informada";
         const digits = rawMA.replace(/\D/g, "").trim();
         const codeClean = digits ? digits.padStart(2, "0") : "NAO_INFORMADA";
@@ -642,7 +648,9 @@ export async function migrateExistingPatientsMicroareaLinks(): Promise<{ updated
 
 // 13. Diagnóstico Administrativo Completo da Unidade
 export async function getUnitAdministrativeDiagnostics(unidadeId: string) {
-  const normUnitId = normalizeUnitId(unidadeId);
+  const units = await getAllActiveUnitsFromStore().catch(() => []);
+  const aliasMap = buildUnitAliasMap(units);
+  const normUnitId = resolveCanonicalUnitId(unidadeId, aliasMap);
   const microareas = await getMicroareasByUnit(normUnitId);
   const acsUsers = await getAcsUsersByUnit(normUnitId);
   const countMap = await getPatientCountMapByMicroarea(normUnitId);
@@ -655,8 +663,8 @@ export async function getUnitAdministrativeDiagnostics(unidadeId: string) {
     const pSnap = await getDocs(collection(db, "pacientes"));
     pSnap.forEach((docSnap) => {
       const d = docSnap.data();
-      const patUnit = normalizeUnitId(d.unidadeId);
-      if (patUnit === normUnitId) {
+      const patUnit = resolveCanonicalUnitId(d.unidadeId || d.unidadeNome, aliasMap);
+      if (patUnit.toUpperCase() === normUnitId.toUpperCase()) {
         totalPatients++;
         const maUpper = (d.microarea || "").toUpperCase();
         if (maUpper.includes("FORA")) foraArea++;
