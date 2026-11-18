@@ -52,6 +52,12 @@ export interface MappedESUSFields {
   hasDiabetes?: string | boolean;
   isSmoker?: string | boolean;
   hasCardiovascularDisease?: string | boolean;
+  dataUltimaHemoglobinaGlicada?: string;
+  hemoglobinaGlicadaAvaliada?: string | boolean;
+  dataUltimaAvaliacaoPes?: string;
+  avaliacaoPesRealizada?: string | boolean;
+  visitasDomiciliares12Meses?: number | string;
+  dataPenultimaVisitaACS?: string;
 }
 
 export interface NormalizedPatientRecord {
@@ -119,6 +125,12 @@ export interface NormalizedPatientRecord {
   hasDiabetes?: boolean;
   isSmoker?: boolean;
   hasCardiovascularDisease?: boolean;
+  dataUltimaHemoglobinaGlicada?: string;
+  hemoglobinaGlicadaAvaliada?: boolean;
+  dataUltimaAvaliacaoPes?: string;
+  avaliacaoPesRealizada?: boolean;
+  visitasDomiciliares12Meses?: number;
+  dataPenultimaVisitaACS?: string;
   priority: "Alta" | "Média" | "Atenção" | "Acompanhado";
   priorityScore: number;
   activeSearchReason?: string;

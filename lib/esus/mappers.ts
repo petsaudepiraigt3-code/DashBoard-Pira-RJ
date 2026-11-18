@@ -132,12 +132,39 @@ export const EXACT_ESUS_HEADER_MAP: { [normalizedHeader: string]: string } = {
   "hipertensao": "hasHypertension",
   "hipertensao arterial": "hasHypertension",
   "possui hipertensao": "hasHypertension",
+  "hipertenso": "hasHypertension",
+  "has": "hasHypertension",
   "diabetes": "hasDiabetes",
   "diabetes mellitus": "hasDiabetes",
   "possui diabetes": "hasDiabetes",
+  "diabetico": "hasDiabetes",
+  "dm": "hasDiabetes",
   "tabagismo": "isSmoker",
   "fumante": "isSmoker",
   "doenca cardiovascular": "hasCardiovascularDisease",
+
+  // BOAS PRÁTICAS DE DIABETES E HIPERTENSÃO (e-SUS APS / Cofinanciamento)
+  "data da ultima hemoglobina glicada": "dataUltimaHemoglobinaGlicada",
+  "data hemoglobina glicada": "dataUltimaHemoglobinaGlicada",
+  "ultima hemoglobina glicada": "dataUltimaHemoglobinaGlicada",
+  "data da ultima solicitacao de hemoglobina glicada": "dataUltimaHemoglobinaGlicada",
+  "data solicitacao hemoglobina glicada": "dataUltimaHemoglobinaGlicada",
+  "data hba1c": "dataUltimaHemoglobinaGlicada",
+  "hemoglobina glicada": "hemoglobinaGlicadaAvaliada",
+  "solicitacao de hemoglobina glicada": "hemoglobinaGlicadaAvaliada",
+  "hba1c": "hemoglobinaGlicadaAvaliada",
+  "data da ultima avaliacao dos pes": "dataUltimaAvaliacaoPes",
+  "data avaliacao dos pes": "dataUltimaAvaliacaoPes",
+  "ultima avaliacao dos pes": "dataUltimaAvaliacaoPes",
+  "data exame dos pes": "dataUltimaAvaliacaoPes",
+  "avaliacao dos pes": "avaliacaoPesRealizada",
+  "exame dos pes": "avaliacaoPesRealizada",
+  "visitas domiciliares nos ultimos 12 meses": "visitasDomiciliares12Meses",
+  "quantidade de visitas domiciliares": "visitasDomiciliares12Meses",
+  "qtd visitas domiciliares": "visitasDomiciliares12Meses",
+  "numero de visitas domiciliares": "visitasDomiciliares12Meses",
+  "data da penultima visita domiciliar": "dataPenultimaVisitaACS",
+  "penultima visita domiciliar": "dataPenultimaVisitaACS",
 };
 
 // Dicionário estrito sem termos ambíguos como 'ma'
@@ -237,6 +264,27 @@ export function matchHeaderToInternalKey(rawHeader: string): string | null {
     if (normalized.includes("enfermagem")) return "monthsSinceNursingCare";
     if (normalized.includes("odontologico")) return "monthsSinceDentalCare";
     if (normalized.includes("visita") || normalized.includes("domiciliar")) return "monthsSinceHomeVisit";
+  }
+  if (normalized.includes("hemoglobina") || normalized.includes("glicada") || normalized.includes("hba1c")) {
+    if (normalized.includes("data") || normalized.includes("ultima") || normalized.includes("dt")) {
+      return "dataUltimaHemoglobinaGlicada";
+    }
+    return "hemoglobinaGlicadaAvaliada";
+  }
+  if ((normalized.includes("avaliacao") || normalized.includes("exame")) && normalized.includes("pes")) {
+    if (normalized.includes("data") || normalized.includes("ultima") || normalized.includes("dt")) {
+      return "dataUltimaAvaliacaoPes";
+    }
+    return "avaliacaoPesRealizada";
+  }
+  if (normalized.includes("penultima") && normalized.includes("visita")) {
+    return "dataPenultimaVisitaACS";
+  }
+  if (
+    (normalized.includes("quantidade") || normalized.includes("qtd") || normalized.includes("numero") || normalized.includes("total")) &&
+    normalized.includes("visita")
+  ) {
+    return "visitasDomiciliares12Meses";
   }
 
   return null;

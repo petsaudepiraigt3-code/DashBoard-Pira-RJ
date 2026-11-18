@@ -11,6 +11,68 @@ export interface UserProfile {
 
 export type PriorityLevel = "Alta" | "Média" | "Atenção" | "Acompanhado";
 
+export type BoaPraticaCode = "A" | "B" | "C" | "D" | "E" | "F";
+
+export interface BoaPraticaManualOverride {
+  cumprida: boolean;
+  data?: string; // YYYY-MM-DD
+  observacao?: string;
+  atualizadoPor?: string;
+  atualizadoEm?: string;
+}
+
+export interface BoaPraticaItem {
+  code: BoaPraticaCode;
+  title: string;
+  shortTitle: string;
+  description: string;
+  points?: number;
+  maxMonths: number;
+  applicable: boolean;
+  fulfilled: boolean;
+  status: "Em dia" | "Pendente" | "Não aplicável";
+  lastDate?: string | null;
+  detailText: string;
+}
+
+export interface PatientBoasPraticasSummary {
+  isApplicable: boolean;
+  items: BoaPraticaItem[];
+  completedCount: number;
+  pendingCount: number;
+  totalApplicableCount: number;
+  complianceRate: number; // 0 a 100 (% de práticas em dia)
+  attentionLevel: PriorityLevel;
+  attentionLabel: string;
+  homeVisitsValidCount12m: number;
+  earnedPoints?: number;
+  totalPossiblePoints?: number;
+  pendingPoints?: number;
+}
+
+export interface DcntBoasPraticasParameters {
+  monthsA: number;
+  monthsB: number;
+  monthsC: number;
+  monthsD: number;
+  minVisitsD: number;
+  minIntervalDaysD: number;
+  monthsE: number;
+  monthsF: number;
+  applyEFOnlyToDiabetes?: boolean;
+  highAttentionMinPending?: number; // padrão: 3 ou mais práticas pendentes
+  mediumAttentionMinPending?: number; // padrão: 2 práticas pendentes
+  pointsA?: number;
+  pointsB?: number;
+  pointsC?: number;
+  pointsD?: number;
+  pointsE?: number;
+  pointsF?: number;
+  highAttentionMaxPoints?: number;
+  mediumAttentionMaxPoints?: number;
+  lowAttentionMaxPoints?: number;
+}
+
 export interface PAMeasurement {
   id: string;
   date: string;
@@ -62,6 +124,9 @@ export interface PatientCargaSnapshot {
   dataUltimoAtendimentoMedico?: string | null;
   dataUltimoAtendimentoEnfermagem?: string | null;
   dataUltimoAtendimentoOdontologico?: string | null;
+  dataUltimaHemoglobinaGlicada?: string | null;
+  dataUltimaAvaliacaoPes?: string | null;
+  boasPraticasScore?: number | null;
 
   prioridade: PriorityLevel;
   motivosPrioridade?: string | null;
@@ -140,6 +205,16 @@ export interface Patient {
   monthsSinceDentalCare?: number | null;
   daysSinceHomeVisit?: number | null;
   monthsSinceHomeVisit?: number | null;
+
+  // Boas Práticas (Diabetes e Hipertensão)
+  lastHbA1cDate?: string;
+  hbA1cStatus?: boolean;
+  lastFootExamDate?: string;
+  footExamStatus?: boolean;
+  homeVisitsCount12m?: number;
+  previousVisitDate?: string;
+  boasPraticasManuais?: Partial<Record<BoaPraticaCode, BoaPraticaManualOverride>>;
+  boasPraticas?: PatientBoasPraticasSummary;
   
   // Status de Busca Ativa
   priority: PriorityLevel;
@@ -285,4 +360,5 @@ export interface DcntParameters {
     medium: number;
     attention: number;
   };
+  boasPraticas?: DcntBoasPraticasParameters;
 }

@@ -210,6 +210,8 @@ export function createSnapshotRecord(
     dataUltimoAtendimentoMedico: norm.lastMedicalCare || null,
     dataUltimoAtendimentoEnfermagem: norm.lastNursingCare || null,
     dataUltimoAtendimentoOdontologico: norm.lastDentalCare || null,
+    dataUltimaHemoglobinaGlicada: norm.dataUltimaHemoglobinaGlicada || null,
+    dataUltimaAvaliacaoPes: norm.dataUltimaAvaliacaoPes || null,
     prioridade: norm.priority,
     motivosPrioridade: norm.activeSearchReason || null,
     microarea: norm.microarea || null,
@@ -318,6 +320,12 @@ export async function executeFivePatientsTestImportToStore(
       dataUltimaConsulta: norm.lastMedicalCare || prevPatientData?.dataUltimaConsulta || null,
       dataUltimoAtendimentoEnfermagem: norm.lastNursingCare || prevPatientData?.dataUltimoAtendimentoEnfermagem || null,
       dataUltimoAtendimentoOdontologico: norm.lastDentalCare || prevPatientData?.dataUltimoAtendimentoOdontologico || null,
+      dataUltimaHemoglobinaGlicada: norm.dataUltimaHemoglobinaGlicada || prevPatientData?.dataUltimaHemoglobinaGlicada || null,
+      hbA1cStatus: norm.hemoglobinaGlicadaAvaliada ?? prevPatientData?.hbA1cStatus ?? false,
+      dataUltimaAvaliacaoPes: norm.dataUltimaAvaliacaoPes || prevPatientData?.dataUltimaAvaliacaoPes || null,
+      footExamStatus: norm.avaliacaoPesRealizada ?? prevPatientData?.footExamStatus ?? false,
+      visitasDomiciliares12Meses: norm.visitasDomiciliares12Meses ?? prevPatientData?.visitasDomiciliares12Meses ?? null,
+      dataPenultimaVisitaACS: norm.dataPenultimaVisitaACS || prevPatientData?.dataPenultimaVisitaACS || null,
       unidadeId,
       unidadeNome,
       microareaId,
@@ -548,7 +556,7 @@ export async function executeESUSImportToStore(
   let newPatientsCount = 0;
   let updatedPatientsCount = 0;
   let newLinksCount = 0;
-  let updatedLinksCount = 0;
+  const updatedLinksCount = 0;
   let paCount = 0;
   let weightCount = 0;
   let reviewCount = 0;
@@ -669,6 +677,12 @@ export async function executeESUSImportToStore(
       dataUltimaConsulta: norm.lastMedicalCare || existingAny?.dataUltimaConsulta || null,
       dataUltimoAtendimentoEnfermagem: norm.lastNursingCare || existingAny?.dataUltimoAtendimentoEnfermagem || null,
       dataUltimoAtendimentoOdontologico: norm.lastDentalCare || existingAny?.dataUltimoAtendimentoOdontologico || null,
+      dataUltimaHemoglobinaGlicada: norm.dataUltimaHemoglobinaGlicada || existingAny?.dataUltimaHemoglobinaGlicada || null,
+      hbA1cStatus: norm.hemoglobinaGlicadaAvaliada ?? existingAny?.hbA1cStatus ?? false,
+      dataUltimaAvaliacaoPes: norm.dataUltimaAvaliacaoPes || existingAny?.dataUltimaAvaliacaoPes || null,
+      footExamStatus: norm.avaliacaoPesRealizada ?? existingAny?.footExamStatus ?? false,
+      visitasDomiciliares12Meses: norm.visitasDomiciliares12Meses ?? existingAny?.visitasDomiciliares12Meses ?? null,
+      dataPenultimaVisitaACS: norm.dataPenultimaVisitaACS || existingAny?.dataPenultimaVisitaACS || null,
       unidadeId,
       unidadeNome,
       microareaId: maMeta.microareaId,
@@ -713,6 +727,7 @@ export async function executeESUSImportToStore(
         {
           ...patientData,
           ...(existingAny?.historicoAcoes ? { historicoAcoes: existingAny.historicoAcoes } : {}),
+          ...(existingAny?.boasPraticasManuais ? { boasPraticasManuais: existingAny.boasPraticasManuais } : {}),
           ...(existingAny?.observacoesGerente ? { observacoesGerente: existingAny.observacoesGerente } : {}),
           ...(existingAny?.observacaoGerenteAtual ? { observacaoGerenteAtual: existingAny.observacaoGerenteAtual } : {}),
           ...(existingAny?.historicoObservacoesGerente ? { historicoObservacoesGerente: existingAny.historicoObservacoesGerente } : {}),

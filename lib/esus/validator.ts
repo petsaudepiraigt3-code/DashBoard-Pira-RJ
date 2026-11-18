@@ -23,7 +23,7 @@ import {
   parseESUSAge,
   inferReportDateFromBirthAndAge,
 } from "./normalizer";
-import { calculateAdminPriorityScore, monthsSinceDate } from "@/lib/utils/priority";
+import { calculateAdminPriorityScore } from "@/lib/utils/priority";
 import { DcntParameters } from "@/types/dcnt";
 import { DEFAULT_DCNT_PARAMETERS } from "@/lib/store/parameters";
 
@@ -335,6 +335,23 @@ export function validateAndNormalizeESUSData(
     const isObese = !!imcVal && imcVal >= obesityCutoff;
     const isOverweight = !!imcVal && imcVal >= overweightCutoff;
 
+    const hasHypertension = parseBooleanESUS(fields.hasHypertension);
+    const hasDiabetes = parseBooleanESUS(fields.hasDiabetes);
+    const dataUltimaHemoglobinaGlicada =
+      parseBRDate(fields.dataUltimaHemoglobinaGlicada) ||
+      parseBRDate(fields.hemoglobinaGlicadaAvaliada) ||
+      undefined;
+    const hemoglobinaGlicadaAvaliada =
+      parseBooleanESUS(fields.hemoglobinaGlicadaAvaliada) || Boolean(dataUltimaHemoglobinaGlicada);
+    const dataUltimaAvaliacaoPes =
+      parseBRDate(fields.dataUltimaAvaliacaoPes) ||
+      parseBRDate(fields.avaliacaoPesRealizada) ||
+      undefined;
+    const avaliacaoPesRealizada =
+      parseBooleanESUS(fields.avaliacaoPesRealizada) || Boolean(dataUltimaAvaliacaoPes);
+    const visitasDomiciliares12Meses = parseESUSInt(fields.visitasDomiciliares12Meses);
+    const dataPenultimaVisitaACS = parseBRDate(fields.dataPenultimaVisitaACS) || undefined;
+
     // Prioridade Administrativa Estrita para Busca Ativa
     const priorityObj = calculateAdminPriorityScore(
       {
@@ -347,6 +364,24 @@ export function validateAndNormalizeESUSData(
         isObese,
         isChildUnder2,
         age: ageVal,
+        hasHypertension,
+        hasDiabetes,
+        lastMedicalCare,
+        lastNursingCare,
+        daysSinceMedicalCare: daysMedical,
+        monthsSinceMedicalCare: monthsMedical,
+        daysSinceNursingCare: daysNursing,
+        monthsSinceNursingCare: monthsNursing,
+        peso: pesoVal,
+        altura: alturaVal,
+        dataMedicao: dataMedicaoIso || undefined,
+        lastHbA1cDate: dataUltimaHemoglobinaGlicada,
+        hbA1cStatus: hemoglobinaGlicadaAvaliada,
+        lastFootExamDate: dataUltimaAvaliacaoPes,
+        footExamStatus: avaliacaoPesRealizada,
+        homeVisitsCount12m: visitasDomiciliares12Meses,
+        previousVisitDate: dataPenultimaVisitaACS,
+        referenceDateIso: reportReferenceDate,
       },
       params
     );
@@ -411,10 +446,16 @@ export function validateAndNormalizeESUSData(
       monthsSinceDentalCare: monthsDental,
       monthsSinceHomeVisit: monthsHomeVisit,
       daysSinceHomeVisit: daysHomeVisit,
-      hasHypertension: parseBooleanESUS(fields.hasHypertension),
-      hasDiabetes: parseBooleanESUS(fields.hasDiabetes),
+      hasHypertension,
+      hasDiabetes,
       isSmoker: parseBooleanESUS(fields.isSmoker),
       hasCardiovascularDisease: parseBooleanESUS(fields.hasCardiovascularDisease),
+      dataUltimaHemoglobinaGlicada,
+      hemoglobinaGlicadaAvaliada,
+      dataUltimaAvaliacaoPes,
+      avaliacaoPesRealizada,
+      visitasDomiciliares12Meses,
+      dataPenultimaVisitaACS,
       isElderly,
       isChildUnder2,
       isObese,

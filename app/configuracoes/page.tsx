@@ -2060,6 +2060,242 @@ export default function ConfiguracoesPage() {
               </div>
             </div>
 
+            {/* Boas Práticas — Indicadores de Diabetes e Hipertensão (Grau de Atenção do ACS) */}
+            {(() => {
+              const bp = params.boasPraticas ?? DEFAULT_DCNT_PARAMETERS.boasPraticas!;
+              const updateBp = (patch: Partial<typeof bp>) =>
+                setParams({
+                  ...params,
+                  boasPraticas: { ...bp, ...patch },
+                });
+
+              return (
+                <div className="rounded-xl border border-zinc-200 bg-white p-5 space-y-4 dark:border-zinc-800 dark:bg-zinc-900">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-xs font-extrabold uppercase tracking-wider text-blue-600 dark:text-blue-400">
+                        4. Boas Práticas — Diabetes e Hipertensão (Grau de Atenção do ACS)
+                      </h3>
+                      <p className="text-[11px] text-zinc-500 mt-0.5">
+                        Define os prazos operacionais e regras que determinam o grau de atenção do ACS para pacientes com HAS ou DM.
+                      </p>
+                    </div>
+                    <span className="text-xs font-bold text-blue-700 bg-blue-50 dark:bg-blue-950/60 dark:text-blue-300 px-2.5 py-1 rounded-lg">
+                      6 Boas Práticas Clínicas (A a F)
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                    {/* A */}
+                    <div className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800 space-y-2">
+                      <div className="flex items-center gap-2">
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-blue-600 text-[11px] font-extrabold text-white">
+                          A
+                        </span>
+                        <span className="font-bold text-zinc-800 dark:text-zinc-200">
+                          Consulta médica ou de enfermagem (presencial/remota)
+                        </span>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-zinc-500 mb-1">Prazo de validade (meses)</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={36}
+                          value={bp.monthsA}
+                          onChange={(e) => updateBp({ monthsA: Number(e.target.value) })}
+                          className="w-full rounded-lg border border-zinc-300 p-1.5 font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                        />
+                      </div>
+                    </div>
+
+                    {/* B */}
+                    <div className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800 space-y-2">
+                      <div className="flex items-center gap-2">
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-blue-600 text-[11px] font-extrabold text-white">
+                          B
+                        </span>
+                        <span className="font-bold text-zinc-800 dark:text-zinc-200">
+                          Registro de aferição de pressão arterial
+                        </span>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-zinc-500 mb-1">Prazo de validade (meses)</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={36}
+                          value={bp.monthsB}
+                          onChange={(e) => updateBp({ monthsB: Number(e.target.value) })}
+                          className="w-full rounded-lg border border-zinc-300 p-1.5 font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                        />
+                      </div>
+                    </div>
+
+                    {/* C */}
+                    <div className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800 space-y-2">
+                      <div className="flex items-center gap-2">
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-blue-600 text-[11px] font-extrabold text-white">
+                          C
+                        </span>
+                        <span className="font-bold text-zinc-800 dark:text-zinc-200">
+                          Registro simultâneo de peso e altura
+                        </span>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-zinc-500 mb-1">Prazo de validade (meses)</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={36}
+                          value={bp.monthsC}
+                          onChange={(e) => updateBp({ monthsC: Number(e.target.value) })}
+                          className="w-full rounded-lg border border-zinc-300 p-1.5 font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                        />
+                      </div>
+                    </div>
+
+                    {/* D */}
+                    <div className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800 space-y-2">
+                      <div className="flex items-center gap-2">
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-blue-600 text-[11px] font-extrabold text-white">
+                          D
+                        </span>
+                        <span className="font-bold text-zinc-800 dark:text-zinc-200">
+                          Visitas domiciliares por ACS/TACS
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2">
+                        <div>
+                          <label className="block text-[11px] text-zinc-500 mb-1">Prazo (meses)</label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={36}
+                            value={bp.monthsD}
+                            onChange={(e) => updateBp({ monthsD: Number(e.target.value) })}
+                            className="w-full rounded-lg border border-zinc-300 p-1.5 font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] text-zinc-500 mb-1">Mín. visitas</label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={12}
+                            value={bp.minVisitsD}
+                            onChange={(e) => updateBp({ minVisitsD: Number(e.target.value) })}
+                            className="w-full rounded-lg border border-zinc-300 p-1.5 font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] text-zinc-500 mb-1">Interv. (dias)</label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={180}
+                            value={bp.minIntervalDaysD}
+                            onChange={(e) => updateBp({ minIntervalDaysD: Number(e.target.value) })}
+                            className="w-full rounded-lg border border-zinc-300 p-1.5 font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* E */}
+                    <div className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800 space-y-2">
+                      <div className="flex items-center gap-2">
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-blue-600 text-[11px] font-extrabold text-white">
+                          E
+                        </span>
+                        <span className="font-bold text-zinc-800 dark:text-zinc-200">
+                          Solicitação de hemoglobina glicada (realizada/avaliada)
+                        </span>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-zinc-500 mb-1">Prazo de validade (meses)</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={36}
+                          value={bp.monthsE}
+                          onChange={(e) => updateBp({ monthsE: Number(e.target.value) })}
+                          className="w-full rounded-lg border border-zinc-300 p-1.5 font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                        />
+                      </div>
+                    </div>
+
+                    {/* F */}
+                    <div className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800 space-y-2">
+                      <div className="flex items-center gap-2">
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-blue-600 text-[11px] font-extrabold text-white">
+                          F
+                        </span>
+                        <span className="font-bold text-zinc-800 dark:text-zinc-200">
+                          Avaliação dos pés realizada
+                        </span>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-zinc-500 mb-1">Prazo de validade (meses)</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={36}
+                          value={bp.monthsF}
+                          onChange={(e) => updateBp({ monthsF: Number(e.target.value) })}
+                          className="w-full rounded-lg border border-zinc-300 p-1.5 font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Cortes do Grau de Atenção baseados em pendências */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-zinc-100 dark:border-zinc-800 text-xs">
+                    <div>
+                      <label className="block font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                        Grau de Atenção Alto (≥ número de práticas pendentes)
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={6}
+                        value={bp.highAttentionMinPending ?? 3}
+                        onChange={(e) => updateBp({ highAttentionMinPending: Number(e.target.value) })}
+                        className="w-full rounded-lg border border-zinc-300 p-2 font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                        Grau de Atenção Moderado (= número de práticas pendentes)
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={6}
+                        value={bp.mediumAttentionMinPending ?? 2}
+                        onChange={(e) => updateBp({ mediumAttentionMinPending: Number(e.target.value) })}
+                        className="w-full rounded-lg border border-zinc-300 p-2 font-bold dark:border-zinc-700 dark:bg-zinc-800"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="pt-1">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={bp.applyEFOnlyToDiabetes ?? false}
+                        onChange={(e) => updateBp({ applyEFOnlyToDiabetes: e.target.checked })}
+                        className="h-4 w-4 rounded border-zinc-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                      />
+                      <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+                        Aplicar práticas E (HbA1c) e F (Avaliação dos Pés) apenas para pacientes com Diabetes Mellitus (DM)
+                      </span>
+                    </label>
+                  </div>
+                </div>
+              );
+            })()}
+
             <div className="flex justify-end">
               <button
                 type="submit"

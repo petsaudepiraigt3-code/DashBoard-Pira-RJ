@@ -1,10 +1,13 @@
 import { supabase } from "@/lib/supabase";
-import { collection, getDocs, doc, getDoc, setDoc, updateDoc, writeBatch } from "@/lib/store/documents";
+import { collection, getDocs, doc, getDoc, updateDoc, writeBatch } from "@/lib/store/documents";
 import { db } from "@/lib/store/documents";
 import {
+  BoaPraticaCode,
+  BoaPraticaManualOverride,
+  DcntParameters,
   Patient,
   PatientActionRecord,
-  PatientActionType,
+  PatientBoasPraticasSummary,
   PriorityLevel,
   PatientCargaSnapshot,
   PAMeasurement,
@@ -13,10 +16,12 @@ import {
   ManagerObservationRevision,
   ManagerObservationCategory,
 } from "@/types/dcnt";
-import { NormalizedPatientRecord } from "../esus/types";
 import { MOCK_UNIT_NAME } from "@/data/mock-data";
 import { compareActionsChronological } from "@/lib/utils/returns";
 import { normalizeUnitId, buildUnitAliasMap, resolveCanonicalUnitId } from "@/lib/store/units";
+import { DEFAULT_DCNT_PARAMETERS, getDcntParametersFromStore } from "@/lib/store/parameters";
+import { evaluatePatientBoasPraticas } from "@/lib/utils/boas-praticas";
+import { calculateAdminPriorityScore } from "@/lib/utils/priority";
 
 export interface StorePatientDoc {
   id: string;
@@ -71,6 +76,13 @@ export interface StorePatientDoc {
   dataUltimaConsulta?: string | null;
   dataUltimoAtendimentoEnfermagem?: string | null;
   dataUltimoAtendimentoOdontologico?: string | null;
+  dataUltimaHemoglobinaGlicada?: string | null;
+  hbA1cStatus?: boolean | null;
+  dataUltimaAvaliacaoPes?: string | null;
+  footExamStatus?: boolean | null;
+  visitasDomiciliares12Meses?: number | null;
+  dataPenultimaVisitaACS?: string | null;
+  boasPraticasManuais?: Partial<Record<BoaPraticaCode, BoaPraticaManualOverride>> | null;
   dataReferenciaCarga?: string | null;
 
   prioridade: "Alta" | "Média" | "Atenção" | "Acompanhado";
@@ -169,47 +181,361 @@ export interface FetchPatientsOptions {
   acsId?: string;
 }
 
+const PRIORITY_RANK: Record<PriorityLevel, number> = {
+  Acompanhado: 0,
+  "Atenção": 1,
+  "Média": 2,
+  Alta: 3,
+};
+
+function buildUnitAndMicroareaMaps(
+  unitsSnap: Awaited<ReturnType<typeof getDocs>> | null,
+  maSnap: Awaited<ReturnType<typeof getDocs>> | null
+) {
+  const unitEntries: Array<{ id?: string; codigo?: string; nome?: string; nomeNormalizado?: string }> = [];
+  if (unitsSnap) {
+    unitsSnap.forEach((uDoc) => {
+      const uData = uDoc.data();
+      unitEntries.push({
+        id: uDoc.id,
+        codigo: uData.codigo,
+        nome: uData.nome,
+        nomeNormalizado: uData.nomeNormalizado,
+      });
+    });
+  }
+  const unitAliasMap = buildUnitAliasMap(unitEntries);
+
+  const microareaAcsMap = new Map<string, string>();
+  if (maSnap) {
+    maSnap.forEach((mDoc) => {
+      const mData = mDoc.data();
+      if (mData.unidadeId && mData.codigo && mData.acsNome) {
+        const mUnit = resolveCanonicalUnitId(mData.unidadeId, unitAliasMap);
+        const cleanCode = (mData.codigo || "").replace(/\D/g, "").trim();
+        const paddedCode = cleanCode ? cleanCode.padStart(2, "0") : "";
+        if (cleanCode) microareaAcsMap.set(`${mUnit}_${cleanCode}`, mData.acsNome);
+        if (paddedCode) microareaAcsMap.set(`${mUnit}_${paddedCode}`, mData.acsNome);
+        microareaAcsMap.set(`${mUnit}_${mData.codigo}`, mData.acsNome);
+      }
+    });
+  }
+
+  return { unitAliasMap, microareaAcsMap };
+}
+
+type RawStorePatientData = StorePatientDoc & {
+  unidadeId?: string;
+  unidadeNome?: string;
+  acsId?: string;
+  acsNome?: string;
+  microareaCodigo?: string;
+  dataUltimaVisita?: string | null;
+  dataUltimaConsulta?: string | null;
+};
+
+function hydratePatientFromStoreDoc(
+  docId: string,
+  data: RawStorePatientData,
+  ctx: {
+    unitAliasMap: Map<string, string>;
+    microareaAcsMap: Map<string, string>;
+    options?: FetchPatientsOptions;
+    dcntParams: DcntParameters;
+  }
+): Patient {
+  const { unitAliasMap, microareaAcsMap, options, dcntParams } = ctx;
+  const pUnitId = resolveCanonicalUnitId(data.unidadeId || data.unidadeNome, unitAliasMap);
+  const pMicroarea = data.microarea || "Sem microárea";
+  const rawDigits =
+    (pMicroarea || "").replace(/\D/g, "").trim() ||
+    (data.microareaCodigo || "").replace(/\D/g, "").trim();
+  const patMACode = rawDigits ? rawDigits.padStart(2, "0") : data.microareaCodigo || "";
+
+  const maKey = `${pUnitId}_${patMACode}`;
+  const assignedAcsFromMA =
+    microareaAcsMap.get(maKey) ||
+    (rawDigits ? microareaAcsMap.get(`${pUnitId}_${rawDigits}`) : undefined) ||
+    (data.microareaCodigo ? microareaAcsMap.get(`${pUnitId}_${data.microareaCodigo}`) : undefined);
+
+  let resolvedACSName = "";
+  if (assignedAcsFromMA) {
+    resolvedACSName = assignedAcsFromMA;
+  } else if (data.acsNome && data.acsNome !== "Agente Comunitário") {
+    resolvedACSName = data.acsNome;
+  } else if (options?.role === "ACS" && options?.acsName) {
+    resolvedACSName = options.acsName;
+  } else {
+    resolvedACSName = "Sem ACS responsável";
+  }
+
+  const ageVal = data.idade || 0;
+  const imcVal = data.imcAtual;
+  const hasValidIMC = typeof imcVal === "number" && !isNaN(imcVal) && imcVal > 0;
+  const isAdult = ageVal >= 20;
+  const isObese = isAdult && hasValidIMC && imcVal >= 30;
+  const isOverweight = isAdult && hasValidIMC && imcVal >= 25 && imcVal < 30;
+
+  const rawHistorico: PatientActionRecord[] = (data as any).historicoAcoes || [];
+  const computedTimeline = rawHistorico.map((act) => ({
+    id: act.id,
+    date: act.dataAcao,
+    type: (act.tipoAcao === "Visita Domiciliar" ? "Visita ACS" : act.tipoAcao === "Contato Telefônico" ? "Contato Telefônico" : "Busca Ativa") as any,
+    title: `Registro de ${act.tipoAcao}`,
+    description: `${act.resultado}${act.observacoes ? `. OBS: ${act.observacoes}` : ""}`,
+    professional: act.acsNome || "Profissional de Saúde",
+  }));
+
+  const lastVisitDate = computeConsolidatedLastVisitDate(data);
+  const lastMedicalApptDate = data.dataUltimaConsulta || undefined;
+
+  const historicoCargas = (data as any).historicoCargas || [];
+  const extractedPAHistory: PAMeasurement[] = [];
+  const extractedWeightHistory: WeightMeasurement[] = [];
+
+  historicoCargas.forEach((c: PatientCargaSnapshot) => {
+    if (c.pressaoSistolica && c.pressaoDiastolica) {
+      extractedPAHistory.push({
+        id: `pa-${c.id}`,
+        date: c.dataPA || (c.dataCarga ? c.dataCarga.substring(0, 10) : ""),
+        systolic: c.pressaoSistolica,
+        diastolic: c.pressaoDiastolica,
+        location: "e-SUS APS",
+      });
+    }
+    if (c.peso && c.altura) {
+      extractedWeightHistory.push({
+        id: `w-${c.id}`,
+        date: c.dataAntropometria || (c.dataCarga ? c.dataCarga.substring(0, 10) : ""),
+        weight: c.peso,
+        height: c.altura,
+        imc: c.imc || Number((c.peso / (c.altura * c.altura)).toFixed(2)),
+      });
+    }
+  });
+
+  if (data.pressaoSistolicaAtual && data.pressaoDiastolicaAtual) {
+    const currentDate = data.dataUltimaPA || new Date().toISOString().substring(0, 10);
+    if (!extractedPAHistory.some((h) => h.date === currentDate)) {
+      extractedPAHistory.push({
+        id: `pa-current-${docId}`,
+        date: currentDate,
+        systolic: data.pressaoSistolicaAtual,
+        diastolic: data.pressaoDiastolicaAtual,
+        location: "e-SUS APS",
+      });
+    }
+  }
+
+  if (data.pesoAtual && data.alturaAtual) {
+    const currentDate = data.dataUltimaAntropometria || new Date().toISOString().substring(0, 10);
+    if (!extractedWeightHistory.some((h) => h.date === currentDate)) {
+      extractedWeightHistory.push({
+        id: `w-current-${docId}`,
+        date: currentDate,
+        weight: data.pesoAtual,
+        height: data.alturaAtual,
+        imc: data.imcAtual || Number((data.pesoAtual / (data.alturaAtual * data.alturaAtual)).toFixed(2)),
+      });
+    }
+  }
+
+  extractedPAHistory.sort((a, b) => a.date.localeCompare(b.date));
+  extractedWeightHistory.sort((a, b) => a.date.localeCompare(b.date));
+
+  const explicitCell =
+    data.telefoneCelular ||
+    data.telefone_celular ||
+    (data as any)["Telefone celular"] ||
+    "";
+  const hasSplitPhoneFields =
+    "telefoneCelular" in data ||
+    "telefone_celular" in data ||
+    "telefoneResidencial" in data ||
+    "telefoneContato" in data;
+  const legacyCellFallback = !hasSplitPhoneFields ? (data.telefone || "") : "";
+  const resolvedPhoneCell = explicitCell || legacyCellFallback || undefined;
+
+  const resolvedPhone =
+    resolvedPhoneCell ||
+    data.telefone ||
+    data.telefoneContato ||
+    data.telefoneResidencial ||
+    data.telefoneOriginal ||
+    "";
+
+  const rawObservacoesGerente: ManagerObservationRecord[] = Array.isArray((data as any).observacoesGerente)
+    ? [...(data as any).observacoesGerente].sort((a, b) => (b.updatedAt || b.createdAt || "").localeCompare(a.updatedAt || a.createdAt || ""))
+    : [];
+  const rawHistoricoObsGerente: ManagerObservationRevision[] = Array.isArray((data as any).historicoObservacoesGerente)
+    ? [...(data as any).historicoObservacoesGerente].sort((a, b) => (b.dataRegistro || "").localeCompare(a.dataRegistro || ""))
+    : [];
+  const resolvedObservacaoAtual: ManagerObservationRecord | null =
+    (data as any).observacaoGerenteAtual || rawObservacoesGerente[0] || null;
+
+  const hasHypertension = Boolean(
+    data.hasHypertension || (data.pressaoSistolicaAtual && data.pressaoSistolicaAtual >= 140)
+  );
+  const hasDiabetes = Boolean(data.hasDiabetes);
+
+  const lastPAObj =
+    data.pressaoSistolicaAtual && data.pressaoDiastolicaAtual
+      ? {
+          id: `pa-${docId}`,
+          date: data.dataUltimaPA || new Date().toISOString().substring(0, 10),
+          systolic: data.pressaoSistolicaAtual,
+          diastolic: data.pressaoDiastolicaAtual,
+          location: "e-SUS APS",
+        }
+      : undefined;
+
+  const lastWeightObj =
+    data.pesoAtual && data.alturaAtual
+      ? {
+          id: `w-${docId}`,
+          date: data.dataUltimaAntropometria || new Date().toISOString().substring(0, 10),
+          weight: data.pesoAtual,
+          height: data.alturaAtual,
+          imc: data.imcAtual || 0,
+        }
+      : undefined;
+
+  const boasPraticas = evaluatePatientBoasPraticas(
+    {
+      hasHypertension,
+      hasDiabetes,
+      lastMedicalApptDate: lastMedicalApptDate || "",
+      lastNursingApptDate: data.dataUltimoAtendimentoEnfermagem || "",
+      daysSinceMedicalCare: data.daysSinceMedicalCare ?? undefined,
+      monthsSinceMedicalCare: data.monthsSinceMedicalCare ?? undefined,
+      daysSinceNursingCare: data.daysSinceNursingCare ?? undefined,
+      monthsSinceNursingCare: data.monthsSinceNursingCare ?? undefined,
+      lastPA: lastPAObj,
+      dataPA: data.dataUltimaPA || undefined,
+      lastWeight: lastWeightObj,
+      peso: data.pesoAtual ?? undefined,
+      altura: data.alturaAtual ?? undefined,
+      dataMedicao: data.dataUltimaAntropometria || undefined,
+      lastVisitDate: lastVisitDate || "",
+      previousVisitDate: data.dataPenultimaVisitaACS || undefined,
+      daysSinceHomeVisit: data.daysSinceHomeVisit ?? undefined,
+      monthsSinceHomeVisit: data.monthsSinceHomeVisit ?? undefined,
+      homeVisitsCount12m: data.visitasDomiciliares12Meses ?? undefined,
+      lastHbA1cDate: data.dataUltimaHemoglobinaGlicada || undefined,
+      hbA1cStatus: data.hbA1cStatus ?? undefined,
+      lastFootExamDate: data.dataUltimaAvaliacaoPes || undefined,
+      footExamStatus: data.footExamStatus ?? undefined,
+      historicoAcoes: rawHistorico,
+      historicoCargas,
+      boasPraticasManuais: data.boasPraticasManuais || undefined,
+    },
+    dcntParams
+  );
+
+  let resolvedPriority: PriorityLevel = data.prioridade || "Acompanhado";
+  let resolvedReason: string | undefined = data.motivosPrioridade || undefined;
+
+  if (boasPraticas.isApplicable && boasPraticas.pendingCount > 0) {
+    if (PRIORITY_RANK[boasPraticas.attentionLevel] > PRIORITY_RANK[resolvedPriority]) {
+      resolvedPriority = boasPraticas.attentionLevel;
+    }
+    const pendingCodes = boasPraticas.items
+      .filter((it) => it.applicable && !it.fulfilled)
+      .map((it) => `${it.code} (${it.points} pts)`);
+    const bpNote = `Boas Práticas HAS/DM (${boasPraticas.earnedPoints}/${boasPraticas.totalPossiblePoints} pts): pendência em ${pendingCodes.join(", ")}`;
+    if (!resolvedReason) {
+      resolvedReason = bpNote;
+    } else if (!resolvedReason.includes("Boa Prática") && !resolvedReason.includes("Boas Práticas")) {
+      resolvedReason = `${bpNote}. ${resolvedReason}`;
+    }
+  }
+
+  return {
+    id: docId,
+    name: data.nome,
+    cpf: data.cpf || "Sem CPF",
+    cns: data.cns || "Sem CNS",
+    birthDate: data.dataNascimento || undefined,
+    age: data.idade || 0,
+    sex: data.sexo || "Feminino",
+    genderIdentity: data.identidadeGenero || undefined,
+    raceColor: data.racaCor || undefined,
+    bolsaFamilia: data.beneficiarioBolsaFamilia ?? undefined,
+    bolsaFamiliaValidity: data.vigenciaBolsaFamilia || undefined,
+    phone: resolvedPhone,
+    phoneCell: resolvedPhoneCell,
+    phoneHome: data.telefoneResidencial || undefined,
+    phoneContact: data.telefoneContato || undefined,
+    street: data.logradouro || undefined,
+    number: data.numero || undefined,
+    complement: data.complemento || undefined,
+    neighborhood: data.bairro || undefined,
+    city: data.municipio || undefined,
+    state: data.uf || undefined,
+    zipCode: data.cep || undefined,
+    unit: data.unidadeNome || MOCK_UNIT_NAME,
+    unidadeId: pUnitId,
+    unidadeNome: data.unidadeNome || MOCK_UNIT_NAME,
+    microarea: pMicroarea,
+    microareaCodigo: patMACode || undefined,
+    acsName: resolvedACSName,
+    isElderly: (data.idade || 0) >= 60,
+    isChildUnder2: data.idade !== null && data.idade !== undefined && data.idade >= 0 && data.idade <= 2,
+    hasHypertension,
+    hasDiabetes,
+    isObese,
+    isOverweight,
+    isSmoker: data.isSmoker || false,
+    hasCardiovascularDisease: data.hasCardiovascularDisease || false,
+    lastPA: lastPAObj,
+    lastWeight: lastWeightObj,
+    lastVisitDate: lastVisitDate || "",
+    lastMedicalApptDate: lastMedicalApptDate || "",
+    lastNursingApptDate: data.dataUltimoAtendimentoEnfermagem || "",
+    lastDentalApptDate: data.dataUltimoAtendimentoOdontologico || "",
+    daysSinceMedicalCare: data.daysSinceMedicalCare ?? undefined,
+    monthsSinceMedicalCare: data.monthsSinceMedicalCare ?? undefined,
+    daysSinceNursingCare: data.daysSinceNursingCare ?? undefined,
+    monthsSinceNursingCare: data.monthsSinceNursingCare ?? undefined,
+    daysSinceDentalCare: data.daysSinceDentalCare ?? undefined,
+    monthsSinceDentalCare: data.monthsSinceDentalCare ?? undefined,
+    daysSinceHomeVisit: data.daysSinceHomeVisit ?? undefined,
+    monthsSinceHomeVisit: data.monthsSinceHomeVisit ?? undefined,
+    lastHbA1cDate: data.dataUltimaHemoglobinaGlicada || undefined,
+    hbA1cStatus: data.hbA1cStatus ?? undefined,
+    lastFootExamDate: data.dataUltimaAvaliacaoPes || undefined,
+    footExamStatus: data.footExamStatus ?? undefined,
+    homeVisitsCount12m: data.visitasDomiciliares12Meses ?? undefined,
+    previousVisitDate: data.dataPenultimaVisitaACS || undefined,
+    boasPraticasManuais: data.boasPraticasManuais || undefined,
+    boasPraticas,
+    priority: resolvedPriority,
+    activeSearchReason: resolvedReason,
+    activeSearchStatus: resolvedPriority === "Alta" ? "Pendente" : "Acompanhado",
+    paHistory: extractedPAHistory,
+    weightHistory: extractedWeightHistory,
+    timeline: computedTimeline,
+    historicoAcoes: rawHistorico,
+    historicoCargas: historicoCargas,
+    observacaoGerenteAtual: resolvedObservacaoAtual,
+    observacoesGerente: rawObservacoesGerente,
+    historicoObservacoesGerente: rawHistoricoObsGerente,
+  };
+}
+
 // 2. Buscar todos os pacientes da coleção 'pacientes' no Store com suporte a filtro de escopo
 export async function getAllPatientsFromStore(options?: FetchPatientsOptions): Promise<Patient[]> {
   const list: Patient[] = [];
   try {
     // Executar consultas independentes em paralelo para reduzir drasticamente a latência de carregamento
-    const [unitsSnap, maSnap, querySnapshot] = await Promise.all([
+    const [unitsSnap, maSnap, querySnapshot, dcntParams] = await Promise.all([
       getDocs(collection(db, "unidades")).catch(() => null),
       getDocs(collection(db, "microareas")).catch(() => null),
       getDocs(collection(db, "pacientes")),
+      getDcntParametersFromStore().catch(() => DEFAULT_DCNT_PARAMETERS),
     ]);
 
-    // Mapeamento canônico de Unidades de Saúde (alinhado com normalize_unit_id do PostgreSQL)
-    const unitEntries: Array<{ id?: string; codigo?: string; nome?: string; nomeNormalizado?: string }> = [];
-    if (unitsSnap) {
-      unitsSnap.forEach((uDoc) => {
-        const uData = uDoc.data();
-        unitEntries.push({
-          id: uDoc.id,
-          codigo: uData.codigo,
-          nome: uData.nome,
-          nomeNormalizado: uData.nomeNormalizado,
-        });
-      });
-    }
-    const unitAliasMap = buildUnitAliasMap(unitEntries);
-
-    // Mapeamento de Microárea -> ACS responsável a partir da coleção 'microareas'
-    const microareaAcsMap = new Map<string, string>();
-    if (maSnap) {
-      maSnap.forEach((mDoc) => {
-        const mData = mDoc.data();
-        if (mData.unidadeId && mData.codigo && mData.acsNome) {
-          const mUnit = resolveCanonicalUnitId(mData.unidadeId, unitAliasMap);
-          const cleanCode = (mData.codigo || "").replace(/\D/g, "").trim();
-          const paddedCode = cleanCode ? cleanCode.padStart(2, "0") : "";
-          if (cleanCode) microareaAcsMap.set(`${mUnit}_${cleanCode}`, mData.acsNome);
-          if (paddedCode) microareaAcsMap.set(`${mUnit}_${paddedCode}`, mData.acsNome);
-          microareaAcsMap.set(`${mUnit}_${mData.codigo}`, mData.acsNome);
-        }
-      });
-    }
+    const { unitAliasMap, microareaAcsMap } = buildUnitAndMicroareaMaps(unitsSnap, maSnap);
 
     const normalizedAssignedCodes = Array.isArray(options?.assignedMicroareaCodes)
       ? options!.assignedMicroareaCodes.map((c) => {
@@ -262,16 +588,7 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
         : false;
 
     rawDocs.forEach((docSnap) => {
-      const data = docSnap.data() as StorePatientDoc & {
-        unidadeId?: string;
-        unidadeNome?: string;
-        acsId?: string;
-        acsNome?: string;
-        microareaCodigo?: string;
-        dataUltimaVisita?: string;
-        dataUltimaConsulta?: string;
-      };
-
+      const data = docSnap.data() as RawStorePatientData;
       const pUnitId = resolveCanonicalUnitId(data.unidadeId || data.unidadeNome, unitAliasMap);
       const pMicroarea = data.microarea || "Sem microárea";
       const rawDigits =
@@ -280,8 +597,6 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
       const patMACode = rawDigits ? rawDigits.padStart(2, "0") : data.microareaCodigo || "";
 
       // Filtro de Escopo em nível de consulta Store:
-      // O GERENTE deve visualizar 100% dos pacientes da sua unidade, sem qualquer restrição de microárea.
-      // O ACS visualiza apenas os pacientes de suas microáreas atribuídas.
       if (isAcs) {
         if (targetUnitId && pUnitId.toUpperCase() !== targetUnitId.toUpperCase()) {
           return;
@@ -301,205 +616,14 @@ export async function getAllPatientsFromStore(options?: FetchPatientsOptions): P
         }
       }
 
-      const maKey = `${pUnitId}_${patMACode}`;
-      const assignedAcsFromMA =
-        microareaAcsMap.get(maKey) ||
-        (rawDigits ? microareaAcsMap.get(`${pUnitId}_${rawDigits}`) : undefined) ||
-        (data.microareaCodigo ? microareaAcsMap.get(`${pUnitId}_${data.microareaCodigo}`) : undefined);
-
-      let resolvedACSName = "";
-      if (assignedAcsFromMA) {
-        resolvedACSName = assignedAcsFromMA;
-      } else if (data.acsNome && data.acsNome !== "Agente Comunitário") {
-        resolvedACSName = data.acsNome;
-      } else if (options?.role === "ACS" && options?.acsName) {
-        resolvedACSName = options.acsName;
-      } else {
-        resolvedACSName = "Sem ACS responsável";
-      }
-
-      const ageVal = data.idade || 0;
-      const imcVal = data.imcAtual;
-      const hasValidIMC = typeof imcVal === "number" && !isNaN(imcVal) && imcVal > 0;
-      const isAdult = ageVal >= 20;
-      const isObese = isAdult && hasValidIMC && imcVal >= 30;
-      const isOverweight = isAdult && hasValidIMC && imcVal >= 25 && imcVal < 30; // Apenas para adultos (>= 20 anos)
-
-      const rawHistorico: PatientActionRecord[] = (data as any).historicoAcoes || [];
-      const computedTimeline = rawHistorico.map((act) => ({
-        id: act.id,
-        date: act.dataAcao,
-        type: (act.tipoAcao === "Visita Domiciliar" ? "Visita ACS" : act.tipoAcao === "Contato Telefônico" ? "Contato Telefônico" : "Busca Ativa") as any,
-        title: `Registro de ${act.tipoAcao}`,
-        description: `${act.resultado}${act.observacoes ? `. OBS: ${act.observacoes}` : ""}`,
-        professional: act.acsNome || "Profissional de Saúde",
-      }));
-
-      // Consolidação estrita da Última Visita ACS (e-SUS + Ações DCNT Saúde)
-      const lastVisitDate = computeConsolidatedLastVisitDate(data);
-      const lastMedicalApptDate = data.dataUltimaConsulta || undefined;
-
-      const historicoCargas = (data as any).historicoCargas || [];
-      const extractedPAHistory: PAMeasurement[] = [];
-      const extractedWeightHistory: WeightMeasurement[] = [];
-
-      historicoCargas.forEach((c: PatientCargaSnapshot) => {
-        if (c.pressaoSistolica && c.pressaoDiastolica) {
-          extractedPAHistory.push({
-            id: `pa-${c.id}`,
-            date: c.dataPA || (c.dataCarga ? c.dataCarga.substring(0, 10) : ""),
-            systolic: c.pressaoSistolica,
-            diastolic: c.pressaoDiastolica,
-            location: "e-SUS APS",
-          });
-        }
-        if (c.peso && c.altura) {
-          extractedWeightHistory.push({
-            id: `w-${c.id}`,
-            date: c.dataAntropometria || (c.dataCarga ? c.dataCarga.substring(0, 10) : ""),
-            weight: c.peso,
-            height: c.altura,
-            imc: c.imc || Number((c.peso / (c.altura * c.altura)).toFixed(2)),
-          });
-        }
-      });
-
-      // Se a última medição atual não estiver em historicoCargas, adicionar
-      if (data.pressaoSistolicaAtual && data.pressaoDiastolicaAtual) {
-        const currentDate = data.dataUltimaPA || new Date().toISOString().substring(0, 10);
-        if (!extractedPAHistory.some((h) => h.date === currentDate)) {
-          extractedPAHistory.push({
-            id: `pa-current-${docSnap.id}`,
-            date: currentDate,
-            systolic: data.pressaoSistolicaAtual,
-            diastolic: data.pressaoDiastolicaAtual,
-            location: "e-SUS APS",
-          });
-        }
-      }
-
-      if (data.pesoAtual && data.alturaAtual) {
-        const currentDate = data.dataUltimaAntropometria || new Date().toISOString().substring(0, 10);
-        if (!extractedWeightHistory.some((h) => h.date === currentDate)) {
-          extractedWeightHistory.push({
-            id: `w-current-${docSnap.id}`,
-            date: currentDate,
-            weight: data.pesoAtual,
-            height: data.alturaAtual,
-            imc: data.imcAtual || Number((data.pesoAtual / (data.alturaAtual * data.alturaAtual)).toFixed(2)),
-          });
-        }
-      }
-
-      extractedPAHistory.sort((a, b) => a.date.localeCompare(b.date));
-      extractedWeightHistory.sort((a, b) => a.date.localeCompare(b.date));
-
-      const explicitCell =
-        data.telefoneCelular ||
-        data.telefone_celular ||
-        (data as any)["Telefone celular"] ||
-        "";
-      const hasSplitPhoneFields =
-        "telefoneCelular" in data ||
-        "telefone_celular" in data ||
-        "telefoneResidencial" in data ||
-        "telefoneContato" in data;
-      // Para registros legados importados antes da separação explícita de telefoneCelular:
-      const legacyCellFallback = !hasSplitPhoneFields ? (data.telefone || "") : "";
-      const resolvedPhoneCell = explicitCell || legacyCellFallback || undefined;
-
-      const resolvedPhone =
-        resolvedPhoneCell ||
-        data.telefone ||
-        data.telefoneContato ||
-        data.telefoneResidencial ||
-        data.telefoneOriginal ||
-        "";
-
-      const rawObservacoesGerente: ManagerObservationRecord[] = Array.isArray((data as any).observacoesGerente)
-        ? [...(data as any).observacoesGerente].sort((a, b) => (b.updatedAt || b.createdAt || "").localeCompare(a.updatedAt || a.createdAt || ""))
-        : [];
-      const rawHistoricoObsGerente: ManagerObservationRevision[] = Array.isArray((data as any).historicoObservacoesGerente)
-        ? [...(data as any).historicoObservacoesGerente].sort((a, b) => (b.dataRegistro || "").localeCompare(a.dataRegistro || ""))
-        : [];
-      const resolvedObservacaoAtual: ManagerObservationRecord | null =
-        (data as any).observacaoGerenteAtual || rawObservacoesGerente[0] || null;
-
-      list.push({
-        id: docSnap.id,
-        name: data.nome,
-        cpf: data.cpf || "Sem CPF",
-        cns: data.cns || "Sem CNS",
-        birthDate: data.dataNascimento || undefined,
-        age: data.idade || 0,
-        sex: data.sexo || "Feminino",
-        genderIdentity: data.identidadeGenero || undefined,
-        raceColor: data.racaCor || undefined,
-        bolsaFamilia: data.beneficiarioBolsaFamilia ?? undefined,
-        bolsaFamiliaValidity: data.vigenciaBolsaFamilia || undefined,
-        phone: resolvedPhone,
-        phoneCell: resolvedPhoneCell,
-        phoneHome: data.telefoneResidencial || undefined,
-        phoneContact: data.telefoneContato || undefined,
-        street: data.logradouro || undefined,
-        number: data.numero || undefined,
-        complement: data.complemento || undefined,
-        neighborhood: data.bairro || undefined,
-        city: data.municipio || undefined,
-        state: data.uf || undefined,
-        zipCode: data.cep || undefined,
-        unit: data.unidadeNome || MOCK_UNIT_NAME,
-        unidadeId: pUnitId,
-        unidadeNome: data.unidadeNome || MOCK_UNIT_NAME,
-        microarea: pMicroarea,
-        microareaCodigo: patMACode || undefined,
-        acsName: resolvedACSName,
-        isElderly: (data.idade || 0) >= 60,
-        isChildUnder2: data.idade !== null && data.idade !== undefined && data.idade >= 0 && data.idade <= 2,
-        hasHypertension: data.hasHypertension || (data.pressaoSistolicaAtual && data.pressaoSistolicaAtual >= 140) || false,
-        hasDiabetes: data.hasDiabetes || false,
-        isObese,
-        isOverweight,
-        isSmoker: data.isSmoker || false,
-        hasCardiovascularDisease: data.hasCardiovascularDisease || false,
-        lastPA: data.pressaoSistolicaAtual && data.pressaoDiastolicaAtual ? {
-          id: `pa-${docSnap.id}`,
-          date: data.dataUltimaPA || new Date().toISOString().substring(0, 10),
-          systolic: data.pressaoSistolicaAtual,
-          diastolic: data.pressaoDiastolicaAtual,
-          location: "e-SUS APS",
-        } : undefined,
-        lastWeight: data.pesoAtual && data.alturaAtual ? {
-          id: `w-${docSnap.id}`,
-          date: data.dataUltimaAntropometria || new Date().toISOString().substring(0, 10),
-          weight: data.pesoAtual,
-          height: data.alturaAtual,
-          imc: data.imcAtual || 0,
-        } : undefined,
-        lastVisitDate: lastVisitDate || "",
-        lastMedicalApptDate: lastMedicalApptDate || "",
-        lastNursingApptDate: data.dataUltimoAtendimentoEnfermagem || "",
-        lastDentalApptDate: data.dataUltimoAtendimentoOdontologico || "",
-        daysSinceMedicalCare: data.daysSinceMedicalCare ?? undefined,
-        monthsSinceMedicalCare: data.monthsSinceMedicalCare ?? undefined,
-        daysSinceNursingCare: data.daysSinceNursingCare ?? undefined,
-        monthsSinceNursingCare: data.monthsSinceNursingCare ?? undefined,
-        daysSinceDentalCare: data.daysSinceDentalCare ?? undefined,
-        monthsSinceDentalCare: data.monthsSinceDentalCare ?? undefined,
-        daysSinceHomeVisit: data.daysSinceHomeVisit ?? undefined,
-        monthsSinceHomeVisit: data.monthsSinceHomeVisit ?? undefined,
-        priority: data.prioridade,
-        activeSearchReason: data.motivosPrioridade || undefined,
-        activeSearchStatus: data.prioridade === "Alta" ? "Pendente" : "Acompanhado",
-        paHistory: extractedPAHistory,
-        weightHistory: extractedWeightHistory,
-        timeline: computedTimeline,
-        historicoAcoes: rawHistorico,
-        historicoCargas: historicoCargas,
-        observacaoGerenteAtual: resolvedObservacaoAtual,
-        observacoesGerente: rawObservacoesGerente,
-        historicoObservacoesGerente: rawHistoricoObsGerente,
-      });
+      list.push(
+        hydratePatientFromStoreDoc(docSnap.id, data, {
+          unitAliasMap,
+          microareaAcsMap,
+          options,
+          dcntParams,
+        })
+      );
     });
   } catch (err) {
     console.error("Erro ao buscar pacientes no Store:", err);
@@ -513,256 +637,24 @@ export async function getPatientByIdFromStore(
 ): Promise<Patient | null> {
   if (!patientId) return null;
   try {
-    const [unitsSnap, maSnap, patSnap] = await Promise.all([
+    const [unitsSnap, maSnap, patSnap, dcntParams] = await Promise.all([
       getDocs(collection(db, "unidades")).catch(() => null),
       getDocs(collection(db, "microareas")).catch(() => null),
       getDoc(doc(db, "pacientes", patientId)),
+      getDcntParametersFromStore().catch(() => DEFAULT_DCNT_PARAMETERS),
     ]);
 
     if (!patSnap.exists()) return null;
 
-    const unitEntries: Array<{ id?: string; codigo?: string; nome?: string; nomeNormalizado?: string }> = [];
-    if (unitsSnap) {
-      unitsSnap.forEach((uDoc) => {
-        const uData = uDoc.data();
-        unitEntries.push({
-          id: uDoc.id,
-          codigo: uData.codigo,
-          nome: uData.nome,
-          nomeNormalizado: uData.nomeNormalizado,
-        });
-      });
-    }
-    const unitAliasMap = buildUnitAliasMap(unitEntries);
+    const { unitAliasMap, microareaAcsMap } = buildUnitAndMicroareaMaps(unitsSnap, maSnap);
+    const data = patSnap.data() as RawStorePatientData;
 
-    const microareaAcsMap = new Map<string, string>();
-    if (maSnap) {
-      maSnap.forEach((mDoc) => {
-        const mData = mDoc.data();
-        if (mData.unidadeId && mData.codigo && mData.acsNome) {
-          const mUnit = resolveCanonicalUnitId(mData.unidadeId, unitAliasMap);
-          const cleanCode = (mData.codigo || "").replace(/\D/g, "").trim();
-          const paddedCode = cleanCode ? cleanCode.padStart(2, "0") : "";
-          if (cleanCode) microareaAcsMap.set(`${mUnit}_${cleanCode}`, mData.acsNome);
-          if (paddedCode) microareaAcsMap.set(`${mUnit}_${paddedCode}`, mData.acsNome);
-          microareaAcsMap.set(`${mUnit}_${mData.codigo}`, mData.acsNome);
-        }
-      });
-    }
-
-    const data = patSnap.data() as StorePatientDoc & {
-      unidadeId?: string;
-      unidadeNome?: string;
-      acsId?: string;
-      acsNome?: string;
-      microareaCodigo?: string;
-      dataUltimaVisita?: string;
-      dataUltimaConsulta?: string;
-    };
-
-    const pUnitId = resolveCanonicalUnitId(data.unidadeId || data.unidadeNome, unitAliasMap);
-    const pMicroarea = data.microarea || "Sem microárea";
-    const rawDigits =
-      (pMicroarea || "").replace(/\D/g, "").trim() ||
-      (data.microareaCodigo || "").replace(/\D/g, "").trim();
-    const patMACode = rawDigits ? rawDigits.padStart(2, "0") : data.microareaCodigo || "";
-
-    const maKey = `${pUnitId}_${patMACode}`;
-    const assignedAcsFromMA =
-      microareaAcsMap.get(maKey) ||
-      (rawDigits ? microareaAcsMap.get(`${pUnitId}_${rawDigits}`) : undefined) ||
-      (data.microareaCodigo ? microareaAcsMap.get(`${pUnitId}_${data.microareaCodigo}`) : undefined);
-
-    let resolvedACSName = "";
-    if (assignedAcsFromMA) {
-      resolvedACSName = assignedAcsFromMA;
-    } else if (data.acsNome && data.acsNome !== "Agente Comunitário") {
-      resolvedACSName = data.acsNome;
-    } else if (options?.role === "ACS" && options?.acsName) {
-      resolvedACSName = options.acsName;
-    } else {
-      resolvedACSName = "Sem ACS responsável";
-    }
-
-    const ageVal = data.idade || 0;
-    const imcVal = data.imcAtual;
-    const hasValidIMC = typeof imcVal === "number" && !isNaN(imcVal) && imcVal > 0;
-    const isAdult = ageVal >= 20;
-    const isObese = isAdult && hasValidIMC && imcVal >= 30;
-    const isOverweight = isAdult && hasValidIMC && imcVal >= 25 && imcVal < 30;
-
-    const rawHistorico: PatientActionRecord[] = (data as any).historicoAcoes || [];
-    const computedTimeline = rawHistorico.map((act) => ({
-      id: act.id,
-      date: act.dataAcao,
-      type: (act.tipoAcao === "Visita Domiciliar" ? "Visita ACS" : act.tipoAcao === "Contato Telefônico" ? "Contato Telefônico" : "Busca Ativa") as any,
-      title: `Registro de ${act.tipoAcao}`,
-      description: `${act.resultado}${act.observacoes ? `. OBS: ${act.observacoes}` : ""}`,
-      professional: act.acsNome || "Profissional de Saúde",
-    }));
-
-    const lastVisitDate = computeConsolidatedLastVisitDate(data);
-    const lastMedicalApptDate = data.dataUltimaConsulta || undefined;
-
-    const historicoCargas = (data as any).historicoCargas || [];
-    const extractedPAHistory: PAMeasurement[] = [];
-    const extractedWeightHistory: WeightMeasurement[] = [];
-
-    historicoCargas.forEach((c: PatientCargaSnapshot) => {
-      if (c.pressaoSistolica && c.pressaoDiastolica) {
-        extractedPAHistory.push({
-          id: `pa-${c.id}`,
-          date: c.dataPA || (c.dataCarga ? c.dataCarga.substring(0, 10) : ""),
-          systolic: c.pressaoSistolica,
-          diastolic: c.pressaoDiastolica,
-          location: "e-SUS APS",
-        });
-      }
-      if (c.peso && c.altura) {
-        extractedWeightHistory.push({
-          id: `w-${c.id}`,
-          date: c.dataAntropometria || (c.dataCarga ? c.dataCarga.substring(0, 10) : ""),
-          weight: c.peso,
-          height: c.altura,
-          imc: c.imc || Number((c.peso / (c.altura * c.altura)).toFixed(2)),
-        });
-      }
+    return hydratePatientFromStoreDoc(patSnap.id, data, {
+      unitAliasMap,
+      microareaAcsMap,
+      options,
+      dcntParams,
     });
-
-    if (data.pressaoSistolicaAtual && data.pressaoDiastolicaAtual) {
-      const currentDate = data.dataUltimaPA || new Date().toISOString().substring(0, 10);
-      if (!extractedPAHistory.some((h) => h.date === currentDate)) {
-        extractedPAHistory.push({
-          id: `pa-current-${patSnap.id}`,
-          date: currentDate,
-          systolic: data.pressaoSistolicaAtual,
-          diastolic: data.pressaoDiastolicaAtual,
-          location: "e-SUS APS",
-        });
-      }
-    }
-
-    if (data.pesoAtual && data.alturaAtual) {
-      const currentDate = data.dataUltimaAntropometria || new Date().toISOString().substring(0, 10);
-      if (!extractedWeightHistory.some((h) => h.date === currentDate)) {
-        extractedWeightHistory.push({
-          id: `w-current-${patSnap.id}`,
-          date: currentDate,
-          weight: data.pesoAtual,
-          height: data.alturaAtual,
-          imc: data.imcAtual || Number((data.pesoAtual / (data.alturaAtual * data.alturaAtual)).toFixed(2)),
-        });
-      }
-    }
-
-    extractedPAHistory.sort((a, b) => a.date.localeCompare(b.date));
-    extractedWeightHistory.sort((a, b) => a.date.localeCompare(b.date));
-
-    const explicitCell =
-      data.telefoneCelular ||
-      data.telefone_celular ||
-      (data as any)["Telefone celular"] ||
-      "";
-    const hasSplitPhoneFields =
-      "telefoneCelular" in data ||
-      "telefone_celular" in data ||
-      "telefoneResidencial" in data ||
-      "telefoneContato" in data;
-    const legacyCellFallback = !hasSplitPhoneFields ? (data.telefone || "") : "";
-    const resolvedPhoneCell = explicitCell || legacyCellFallback || undefined;
-
-    const resolvedPhone =
-      resolvedPhoneCell ||
-      data.telefone ||
-      data.telefoneContato ||
-      data.telefoneResidencial ||
-      data.telefoneOriginal ||
-      "";
-
-    const rawObservacoesGerente: ManagerObservationRecord[] = Array.isArray((data as any).observacoesGerente)
-      ? [...(data as any).observacoesGerente].sort((a, b) => (b.updatedAt || b.createdAt || "").localeCompare(a.updatedAt || a.createdAt || ""))
-      : [];
-    const rawHistoricoObsGerente: ManagerObservationRevision[] = Array.isArray((data as any).historicoObservacoesGerente)
-      ? [...(data as any).historicoObservacoesGerente].sort((a, b) => (b.dataRegistro || "").localeCompare(a.dataRegistro || ""))
-      : [];
-    const resolvedObservacaoAtual: ManagerObservationRecord | null =
-      (data as any).observacaoGerenteAtual || rawObservacoesGerente[0] || null;
-
-    return {
-      id: patSnap.id,
-      name: data.nome,
-      cpf: data.cpf || "Sem CPF",
-      cns: data.cns || "Sem CNS",
-      birthDate: data.dataNascimento || undefined,
-      age: data.idade || 0,
-      sex: data.sexo || "Feminino",
-      genderIdentity: data.identidadeGenero || undefined,
-      raceColor: data.racaCor || undefined,
-      bolsaFamilia: data.beneficiarioBolsaFamilia ?? undefined,
-      bolsaFamiliaValidity: data.vigenciaBolsaFamilia || undefined,
-      phone: resolvedPhone,
-      phoneCell: resolvedPhoneCell,
-      phoneHome: data.telefoneResidencial || undefined,
-      phoneContact: data.telefoneContato || undefined,
-      street: data.logradouro || undefined,
-      number: data.numero || undefined,
-      complement: data.complemento || undefined,
-      neighborhood: data.bairro || undefined,
-      city: data.municipio || undefined,
-      state: data.uf || undefined,
-      zipCode: data.cep || undefined,
-      unit: data.unidadeNome || MOCK_UNIT_NAME,
-      unidadeId: pUnitId,
-      unidadeNome: data.unidadeNome || MOCK_UNIT_NAME,
-      microarea: pMicroarea,
-      microareaCodigo: patMACode || undefined,
-      acsName: resolvedACSName,
-      isElderly: (data.idade || 0) >= 60,
-      isChildUnder2: data.idade !== null && data.idade !== undefined && data.idade >= 0 && data.idade <= 2,
-      hasHypertension: data.hasHypertension || (data.pressaoSistolicaAtual && data.pressaoSistolicaAtual >= 140) || false,
-      hasDiabetes: data.hasDiabetes || false,
-      isObese,
-      isOverweight,
-      isSmoker: data.isSmoker || false,
-      hasCardiovascularDisease: data.hasCardiovascularDisease || false,
-      lastPA: data.pressaoSistolicaAtual && data.pressaoDiastolicaAtual ? {
-        id: `pa-${patSnap.id}`,
-        date: data.dataUltimaPA || new Date().toISOString().substring(0, 10),
-        systolic: data.pressaoSistolicaAtual,
-        diastolic: data.pressaoDiastolicaAtual,
-        location: "e-SUS APS",
-      } : undefined,
-      lastWeight: data.pesoAtual && data.alturaAtual ? {
-        id: `w-${patSnap.id}`,
-        date: data.dataUltimaAntropometria || new Date().toISOString().substring(0, 10),
-        weight: data.pesoAtual,
-        height: data.alturaAtual,
-        imc: data.imcAtual || 0,
-      } : undefined,
-      lastVisitDate: lastVisitDate || "",
-      lastMedicalApptDate: lastMedicalApptDate || "",
-      lastNursingApptDate: data.dataUltimoAtendimentoEnfermagem || "",
-      lastDentalApptDate: data.dataUltimoAtendimentoOdontologico || "",
-      daysSinceMedicalCare: data.daysSinceMedicalCare ?? undefined,
-      monthsSinceMedicalCare: data.monthsSinceMedicalCare ?? undefined,
-      daysSinceNursingCare: data.daysSinceNursingCare ?? undefined,
-      monthsSinceNursingCare: data.monthsSinceNursingCare ?? undefined,
-      daysSinceDentalCare: data.daysSinceDentalCare ?? undefined,
-      monthsSinceDentalCare: data.monthsSinceDentalCare ?? undefined,
-      daysSinceHomeVisit: data.daysSinceHomeVisit ?? undefined,
-      monthsSinceHomeVisit: data.monthsSinceHomeVisit ?? undefined,
-      priority: data.prioridade,
-      activeSearchReason: data.motivosPrioridade || undefined,
-      activeSearchStatus: data.prioridade === "Alta" ? "Pendente" : "Acompanhado",
-      paHistory: extractedPAHistory,
-      weightHistory: extractedWeightHistory,
-      timeline: computedTimeline,
-      historicoAcoes: rawHistorico,
-      historicoCargas: historicoCargas,
-      observacaoGerenteAtual: resolvedObservacaoAtual,
-      observacoesGerente: rawObservacoesGerente,
-      historicoObservacoesGerente: rawHistoricoObsGerente,
-    };
   } catch {
     return null;
   }
@@ -867,6 +759,123 @@ export async function getPatientHistorySnapshotsFromStore(patientId: string): Pr
 }
 
 // 6. Atualizar condições crônicas manualmente no prontuário (GERENTE / ADMIN)
+function computeRecalculatedPriorityForDoc(
+  mergedData: RawStorePatientData,
+  dcntParams: DcntParameters
+): {
+  priority: PriorityLevel;
+  reason: string;
+  boasPraticas: PatientBoasPraticasSummary;
+} {
+  const ageVal = mergedData.idade || 0;
+  const imcVal = mergedData.imcAtual;
+  const hasValidIMC = typeof imcVal === "number" && !isNaN(imcVal) && imcVal > 0;
+  const elderlyCutoff = dcntParams.elderlyAgeCutoff ?? 60;
+  const childCutoff = dcntParams.childUnder2AgeCutoff ?? 2;
+  const obesityCutoff = dcntParams.obesityImcCutoff ?? 30;
+
+  const isElderly = ageVal >= elderlyCutoff;
+  const isChildUnder2 = ageVal >= 0 && ageVal <= childCutoff;
+  const isObese = ageVal >= 20 && hasValidIMC && imcVal >= obesityCutoff;
+  const hasHypertension = Boolean(
+    mergedData.hasHypertension ||
+      (mergedData.pressaoSistolicaAtual && mergedData.pressaoSistolicaAtual >= 140)
+  );
+  const hasDiabetes = Boolean(mergedData.hasDiabetes);
+
+  const lastVisitDate = computeConsolidatedLastVisitDate(mergedData);
+  const rawHistorico: PatientActionRecord[] = mergedData.historicoAcoes || [];
+  const historicoCargas: PatientCargaSnapshot[] = mergedData.historicoCargas || [];
+
+  const boasPraticas = evaluatePatientBoasPraticas(
+    {
+      hasHypertension,
+      hasDiabetes,
+      lastMedicalApptDate: mergedData.dataUltimaConsulta || "",
+      lastNursingApptDate: mergedData.dataUltimoAtendimentoEnfermagem || "",
+      daysSinceMedicalCare: mergedData.daysSinceMedicalCare ?? undefined,
+      monthsSinceMedicalCare: mergedData.monthsSinceMedicalCare ?? undefined,
+      daysSinceNursingCare: mergedData.daysSinceNursingCare ?? undefined,
+      monthsSinceNursingCare: mergedData.monthsSinceNursingCare ?? undefined,
+      lastPA:
+        mergedData.pressaoSistolicaAtual && mergedData.pressaoDiastolicaAtual
+          ? {
+              date: mergedData.dataUltimaPA,
+              systolic: mergedData.pressaoSistolicaAtual,
+              diastolic: mergedData.pressaoDiastolicaAtual,
+            }
+          : undefined,
+      dataPA: mergedData.dataUltimaPA,
+      lastWeight:
+        mergedData.pesoAtual && mergedData.alturaAtual
+          ? {
+              date: mergedData.dataUltimaAntropometria,
+              weight: mergedData.pesoAtual,
+              height: mergedData.alturaAtual,
+              imc: mergedData.imcAtual ?? undefined,
+            }
+          : undefined,
+      peso: mergedData.pesoAtual,
+      altura: mergedData.alturaAtual,
+      dataMedicao: mergedData.dataUltimaAntropometria,
+      lastVisitDate,
+      previousVisitDate: mergedData.dataPenultimaVisitaACS,
+      daysSinceHomeVisit: mergedData.daysSinceHomeVisit,
+      monthsSinceHomeVisit: mergedData.monthsSinceHomeVisit,
+      homeVisitsCount12m: mergedData.visitasDomiciliares12Meses,
+      lastHbA1cDate: mergedData.dataUltimaHemoglobinaGlicada,
+      hbA1cStatus: mergedData.hbA1cStatus,
+      lastFootExamDate: mergedData.dataUltimaAvaliacaoPes,
+      footExamStatus: mergedData.footExamStatus,
+      historicoAcoes: rawHistorico,
+      historicoCargas,
+      boasPraticasManuais: mergedData.boasPraticasManuais || undefined,
+    },
+    dcntParams
+  );
+
+  const priorityResult = calculateAdminPriorityScore(
+    {
+      systolic: mergedData.pressaoSistolicaAtual,
+      diastolic: mergedData.pressaoDiastolicaAtual,
+      dataPA: mergedData.dataUltimaPA,
+      monthsSinceHomeVisit: mergedData.monthsSinceHomeVisit,
+      lastHomeVisit: lastVisitDate || null,
+      isElderly,
+      isObese,
+      isChildUnder2,
+      age: ageVal,
+      hasHypertension,
+      hasDiabetes,
+      lastMedicalCare: mergedData.dataUltimaConsulta,
+      lastNursingCare: mergedData.dataUltimoAtendimentoEnfermagem,
+      daysSinceMedicalCare: mergedData.daysSinceMedicalCare,
+      monthsSinceMedicalCare: mergedData.monthsSinceMedicalCare,
+      daysSinceNursingCare: mergedData.daysSinceNursingCare,
+      monthsSinceNursingCare: mergedData.monthsSinceNursingCare,
+      peso: mergedData.pesoAtual,
+      altura: mergedData.alturaAtual,
+      dataMedicao: mergedData.dataUltimaAntropometria,
+      lastHbA1cDate: mergedData.dataUltimaHemoglobinaGlicada,
+      hbA1cStatus: mergedData.hbA1cStatus,
+      lastFootExamDate: mergedData.dataUltimaAvaliacaoPes,
+      footExamStatus: mergedData.footExamStatus,
+      homeVisitsCount12m: mergedData.visitasDomiciliares12Meses,
+      previousVisitDate: mergedData.dataPenultimaVisitaACS,
+      historicoAcoes: rawHistorico,
+      historicoCargas,
+      boasPraticasManuais: mergedData.boasPraticasManuais || undefined,
+    },
+    dcntParams
+  );
+
+  return {
+    priority: priorityResult.priority,
+    reason: priorityResult.reason,
+    boasPraticas,
+  };
+}
+
 export async function updatePatientConditionsInStore(
   patientId: string,
   conditions: {
@@ -875,12 +884,115 @@ export async function updatePatientConditionsInStore(
     isSmoker?: boolean;
     hasCardiovascularDisease?: boolean;
   }
-): Promise<void> {
+): Promise<{
+  priority?: PriorityLevel;
+  activeSearchReason?: string;
+  boasPraticas?: PatientBoasPraticasSummary;
+} | void> {
   const patientRef = doc(db, "pacientes", patientId);
+  const [snap, dcntParams] = await Promise.all([
+    getDoc(patientRef),
+    getDcntParametersFromStore().catch(() => DEFAULT_DCNT_PARAMETERS),
+  ]);
+
+  if (!snap.exists()) {
+    await updateDoc(patientRef, {
+      ...conditions,
+      updatedAt: new Date().toISOString(),
+    });
+    return;
+  }
+
+  const prevData = snap.data() as RawStorePatientData;
+  const mergedData: RawStorePatientData = {
+    ...prevData,
+    ...conditions,
+  };
+
+  const recalc = computeRecalculatedPriorityForDoc(mergedData, dcntParams);
+
   await updateDoc(patientRef, {
     ...conditions,
+    prioridade: recalc.priority,
+    motivosPrioridade: recalc.reason,
     updatedAt: new Date().toISOString(),
   });
+
+  return {
+    priority: recalc.priority,
+    activeSearchReason: recalc.reason,
+    boasPraticas: recalc.boasPraticas,
+  };
+}
+
+export interface UpdateBoasPraticasPayload {
+  boasPraticasManuais?: Partial<Record<BoaPraticaCode, BoaPraticaManualOverride>>;
+  dataUltimaConsulta?: string | null;
+  dataUltimaPA?: string | null;
+  pressaoSistolicaAtual?: number | null;
+  pressaoDiastolicaAtual?: number | null;
+  pesoAtual?: number | null;
+  alturaAtual?: number | null;
+  imcAtual?: number | null;
+  dataUltimaAntropometria?: string | null;
+  dataUltimaVisitaACS?: string | null;
+  dataPenultimaVisitaACS?: string | null;
+  visitasDomiciliares12Meses?: number | null;
+  dataUltimaHemoglobinaGlicada?: string | null;
+  hbA1cStatus?: boolean | null;
+  dataUltimaAvaliacaoPes?: string | null;
+  footExamStatus?: boolean | null;
+}
+
+export async function updatePatientBoasPraticasInStore(
+  patientId: string,
+  updates: UpdateBoasPraticasPayload
+): Promise<{
+  priority: PriorityLevel;
+  activeSearchReason: string;
+  boasPraticas: PatientBoasPraticasSummary;
+  boasPraticasManuais: Partial<Record<BoaPraticaCode, BoaPraticaManualOverride>>;
+}> {
+  const patientRef = doc(db, "pacientes", patientId);
+  const [snap, dcntParams] = await Promise.all([
+    getDoc(patientRef),
+    getDcntParametersFromStore().catch(() => DEFAULT_DCNT_PARAMETERS),
+  ]);
+
+  if (!snap.exists()) {
+    throw new Error("Paciente não encontrado ou acesso negado.");
+  }
+
+  const prevData = snap.data() as RawStorePatientData;
+  const mergedManuais: Partial<Record<BoaPraticaCode, BoaPraticaManualOverride>> = {
+    ...(prevData.boasPraticasManuais || {}),
+    ...(updates.boasPraticasManuais || {}),
+  };
+
+  const fieldUpdates = { ...updates };
+  delete fieldUpdates.boasPraticasManuais;
+  const mergedData: RawStorePatientData = {
+    ...prevData,
+    ...fieldUpdates,
+    boasPraticasManuais: mergedManuais,
+  };
+
+  const recalc = computeRecalculatedPriorityForDoc(mergedData, dcntParams);
+
+  await updateDoc(patientRef, {
+    ...fieldUpdates,
+    boasPraticasManuais: mergedManuais,
+    prioridade: recalc.priority,
+    motivosPrioridade: recalc.reason,
+    updatedAt: new Date().toISOString(),
+  });
+
+  return {
+    priority: recalc.priority,
+    activeSearchReason: recalc.reason,
+    boasPraticas: recalc.boasPraticas,
+    boasPraticasManuais: mergedManuais,
+  };
 }
 
 async function persistManagerObservationToStore(

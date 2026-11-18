@@ -1,5 +1,14 @@
-import { Patient, PriorityLevel, PatientActionRecord, DcntParameters } from "@/types/dcnt";
+import {
+  BoaPraticaCode,
+  BoaPraticaManualOverride,
+  DcntParameters,
+  Patient,
+  PatientActionRecord,
+  PatientCargaSnapshot,
+  PriorityLevel,
+} from "@/types/dcnt";
 import { DEFAULT_DCNT_PARAMETERS } from "@/lib/store/parameters";
+import { evaluatePatientBoasPraticas } from "@/lib/utils/boas-praticas";
 
 /**
  * Interface para os fatores de entrada da pontuação administrativa de Busca Ativa.
@@ -15,6 +24,27 @@ export interface AdminPriorityInput {
   isObese: boolean;
   isChildUnder2?: boolean;
   age?: number | null;
+  hasHypertension?: boolean;
+  hasDiabetes?: boolean;
+  lastMedicalCare?: string | null;
+  lastNursingCare?: string | null;
+  daysSinceMedicalCare?: number | null;
+  monthsSinceMedicalCare?: number | null;
+  daysSinceNursingCare?: number | null;
+  monthsSinceNursingCare?: number | null;
+  peso?: number | null;
+  altura?: number | null;
+  dataMedicao?: string | null;
+  lastHbA1cDate?: string | null;
+  hbA1cStatus?: boolean | null;
+  lastFootExamDate?: string | null;
+  footExamStatus?: boolean | null;
+  homeVisitsCount12m?: number | null;
+  previousVisitDate?: string | null;
+  historicoAcoes?: PatientActionRecord[];
+  historicoCargas?: PatientCargaSnapshot[];
+  boasPraticasManuais?: Partial<Record<BoaPraticaCode, BoaPraticaManualOverride>>;
+  referenceDateIso?: string | null;
 }
 
 /**
@@ -218,6 +248,70 @@ export function calculateAdminPriorityScore(
     priority = "Atenção";
   }
 
+  // 7. Boas Práticas de Diabetes e Hipertensão (Grau de Atenção do ACS)
+  if (record.hasHypertension || record.hasDiabetes) {
+    const bpSummary = evaluatePatientBoasPraticas(
+      {
+        hasHypertension: record.hasHypertension,
+        hasDiabetes: record.hasDiabetes,
+        lastMedicalCare: record.lastMedicalCare,
+        lastNursingCare: record.lastNursingCare,
+        daysSinceMedicalCare: record.daysSinceMedicalCare,
+        monthsSinceMedicalCare: record.monthsSinceMedicalCare,
+        daysSinceNursingCare: record.daysSinceNursingCare,
+        monthsSinceNursingCare: record.monthsSinceNursingCare,
+        dataPA: record.dataPA,
+        lastPA:
+          record.systolic || record.diastolic || record.dataPA
+            ? {
+                date: record.dataPA,
+                systolic: record.systolic ?? undefined,
+                diastolic: record.diastolic ?? undefined,
+              }
+            : undefined,
+        peso: record.peso,
+        altura: record.altura,
+        dataMedicao: record.dataMedicao,
+        lastHomeVisit: record.lastHomeVisit,
+        previousVisitDate: record.previousVisitDate,
+        monthsSinceHomeVisit: record.monthsSinceHomeVisit,
+        homeVisitsCount12m: record.homeVisitsCount12m,
+        lastHbA1cDate: record.lastHbA1cDate,
+        hbA1cStatus: record.hbA1cStatus,
+        lastFootExamDate: record.lastFootExamDate,
+        footExamStatus: record.footExamStatus,
+        historicoAcoes: record.historicoAcoes,
+        historicoCargas: record.historicoCargas,
+        boasPraticasManuais: record.boasPraticasManuais,
+      },
+      params,
+      record.referenceDateIso
+    );
+
+    const pendingItems = bpSummary.items.filter((it) => it.applicable && !it.fulfilled);
+    if (pendingItems.length > 0) {
+      pendingItems.forEach((it) => {
+        reasons.push(`Boa Prática ${it.code} (${it.shortTitle}) pendente`);
+        contributingFactors.push({
+          id: `BOA_PRATICA_${it.code}`,
+          title: `Boa Prática ${it.code} Pendente: ${it.shortTitle}`,
+          description: `${it.description} — Situação: ${it.detailText}.`,
+          source: record.boasPraticasManuais?.[it.code] ? "DCNT Saúde" : "e-SUS APS",
+        });
+      });
+
+      const priorityRank: Record<PriorityLevel, number> = {
+        Acompanhado: 0,
+        "Atenção": 1,
+        "Média": 2,
+        Alta: 3,
+      };
+      if (priorityRank[bpSummary.attentionLevel] > priorityRank[priority]) {
+        priority = bpSummary.attentionLevel;
+      }
+    }
+  }
+
   return {
     priority,
     score,
@@ -277,6 +371,26 @@ export function getPriorityExplanation(
       isObese,
       isChildUnder2,
       age: patient.age,
+      hasHypertension: patient.hasHypertension,
+      hasDiabetes: patient.hasDiabetes,
+      lastMedicalCare: patient.lastMedicalApptDate,
+      lastNursingCare: patient.lastNursingApptDate,
+      daysSinceMedicalCare: patient.daysSinceMedicalCare,
+      monthsSinceMedicalCare: patient.monthsSinceMedicalCare,
+      daysSinceNursingCare: patient.daysSinceNursingCare,
+      monthsSinceNursingCare: patient.monthsSinceNursingCare,
+      peso: patient.lastWeight?.weight,
+      altura: patient.lastWeight?.height,
+      dataMedicao: patient.lastWeight?.date,
+      lastHbA1cDate: patient.lastHbA1cDate,
+      hbA1cStatus: patient.hbA1cStatus,
+      lastFootExamDate: patient.lastFootExamDate,
+      footExamStatus: patient.footExamStatus,
+      homeVisitsCount12m: patient.homeVisitsCount12m,
+      previousVisitDate: patient.previousVisitDate,
+      historicoAcoes: allActions,
+      historicoCargas: patient.historicoCargas,
+      boasPraticasManuais: patient.boasPraticasManuais,
     },
     params
   );
@@ -305,6 +419,25 @@ export function getPriorityExplanation(
         description: `Visita domiciliar do ACS realizada dentro do período preconizado de monitoramento (último registro em ${formatDateSimple(patient.lastVisitDate)}).`,
         source: "e-SUS APS",
       });
+    }
+
+    if (patient.hasHypertension || patient.hasDiabetes) {
+      const bpSummary = evaluatePatientBoasPraticas(
+        {
+          ...patient,
+          historicoAcoes: allActions,
+        },
+        params
+      );
+      if (bpSummary.pendingCount === 0) {
+        factors.push({
+          id: "BOAS_PRATICAS_EM_DIA",
+          title: `Boas Práticas de Hipertensão/Diabetes em Dia (${bpSummary.completedCount}/${bpSummary.totalApplicableCount})`,
+          description:
+            "Todas as boas práticas aplicáveis (A a F) estão em conformidade dentro dos prazos preconizados.",
+          source: "e-SUS APS",
+        });
+      }
     }
 
     factors.push({

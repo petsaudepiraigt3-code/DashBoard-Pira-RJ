@@ -26,6 +26,19 @@ export const DEFAULT_DCNT_PARAMETERS: DcntParameters = {
     medium: 3,
     attention: 1,
   },
+  boasPraticas: {
+    monthsA: 6,
+    monthsB: 6,
+    monthsC: 12,
+    monthsD: 12,
+    minVisitsD: 2,
+    minIntervalDaysD: 30,
+    monthsE: 12,
+    monthsF: 12,
+    applyEFOnlyToDiabetes: false,
+    highAttentionMinPending: 3,
+    mediumAttentionMinPending: 2,
+  },
 };
 
 const COLLECTION_NAME = "parametros";
@@ -89,6 +102,40 @@ function normalizeParameters(data: Partial<DcntParameters>): DcntParameters {
       attention: Number(
         data.priorityCutoffs?.attention ?? DEFAULT_DCNT_PARAMETERS.priorityCutoffs!.attention
       ),
+    },
+    boasPraticas: {
+      monthsA: Number(data.boasPraticas?.monthsA ?? DEFAULT_DCNT_PARAMETERS.boasPraticas!.monthsA),
+      monthsB: Number(data.boasPraticas?.monthsB ?? DEFAULT_DCNT_PARAMETERS.boasPraticas!.monthsB),
+      monthsC: Number(data.boasPraticas?.monthsC ?? DEFAULT_DCNT_PARAMETERS.boasPraticas!.monthsC),
+      monthsD: Number(data.boasPraticas?.monthsD ?? DEFAULT_DCNT_PARAMETERS.boasPraticas!.monthsD),
+      minVisitsD: Number(
+        data.boasPraticas?.minVisitsD ?? DEFAULT_DCNT_PARAMETERS.boasPraticas!.minVisitsD
+      ),
+      minIntervalDaysD: Number(
+        data.boasPraticas?.minIntervalDaysD ?? DEFAULT_DCNT_PARAMETERS.boasPraticas!.minIntervalDaysD
+      ),
+      monthsE: Number(data.boasPraticas?.monthsE ?? DEFAULT_DCNT_PARAMETERS.boasPraticas!.monthsE),
+      monthsF: Number(data.boasPraticas?.monthsF ?? DEFAULT_DCNT_PARAMETERS.boasPraticas!.monthsF),
+      applyEFOnlyToDiabetes: Boolean(
+        data.boasPraticas?.applyEFOnlyToDiabetes ??
+          DEFAULT_DCNT_PARAMETERS.boasPraticas!.applyEFOnlyToDiabetes
+      ),
+      highAttentionMinPending: Number(
+        data.boasPraticas?.highAttentionMinPending ??
+          DEFAULT_DCNT_PARAMETERS.boasPraticas!.highAttentionMinPending ??
+          3
+      ),
+      mediumAttentionMinPending: Number(
+        data.boasPraticas?.mediumAttentionMinPending ??
+          DEFAULT_DCNT_PARAMETERS.boasPraticas!.mediumAttentionMinPending ??
+          2
+      ),
+      pointsA: data.boasPraticas?.pointsA,
+      pointsB: data.boasPraticas?.pointsB,
+      pointsC: data.boasPraticas?.pointsC,
+      pointsD: data.boasPraticas?.pointsD,
+      pointsE: data.boasPraticas?.pointsE,
+      pointsF: data.boasPraticas?.pointsF,
     },
   };
 }

@@ -9,10 +9,15 @@ import { BarChartSVG, DonutChartSVG } from "@/components/ui/charts";
 import { getAllPatientsFromStore } from "@/lib/store/patients";
 import { getUnitAdministrativeDiagnostics, normalizeUnitId } from "@/lib/store/units";
 import { DEFAULT_DCNT_PARAMETERS, getDcntParametersFromStore } from "@/lib/store/parameters";
-import { DcntParameters, Patient } from "@/types/dcnt";
+import { DcntParameters, Patient, BoaPraticaCode } from "@/types/dcnt";
 import { useRouter } from "next/navigation";
 import { formatDateBR } from "@/lib/utils/formatters";
 import { monthsSinceDate } from "@/lib/utils/priority";
+import {
+  BOAS_PRATICAS_CATALOG,
+  evaluatePatientBoasPraticas,
+  getEffectiveBoasPraticasParams,
+} from "@/lib/utils/boas-praticas";
 import {
   Users,
   UserCheck,
@@ -273,6 +278,70 @@ export default function DashboardPage() {
     () => sortedPendingReturns.filter((i) => i.status === "Agendado").length,
     [sortedPendingReturns]
   );
+
+  // Estatísticas das 6 Boas Práticas (Diabetes e Hipertensão — Grau de Atenção do ACS)
+  const boasPraticasOverview = (() => {
+    const bpParams = getEffectiveBoasPraticasParams(dcntParams);
+    const hasDmPatients = filteredPatients.filter((p) => p.hasHypertension || p.hasDiabetes);
+    const summaries = hasDmPatients.map((p) => evaluatePatientBoasPraticas(p, dcntParams));
+
+    const totalHasDm = hasDmPatients.length;
+    const avgCompleted =
+      totalHasDm > 0
+        ? (summaries.reduce((acc, s) => acc + s.completedCount, 0) / totalHasDm).toFixed(1)
+        : "0";
+    const avgTotal =
+      totalHasDm > 0
+        ? Math.round(summaries.reduce((acc, s) => acc + s.totalApplicableCount, 0) / totalHasDm)
+        : 6;
+    const avgRate =
+      totalHasDm > 0
+        ? Math.round(summaries.reduce((acc, s) => acc + s.complianceRate, 0) / totalHasDm)
+        : 0;
+
+    const attentionCounts = {
+      Alta: summaries.filter((s) => s.attentionLevel === "Alta").length,
+      "Média": summaries.filter((s) => s.attentionLevel === "Média").length,
+      "Atenção": summaries.filter((s) => s.attentionLevel === "Atenção").length,
+      Acompanhado: summaries.filter((s) => s.attentionLevel === "Acompanhado").length,
+    };
+
+    const codes: BoaPraticaCode[] = ["A", "B", "C", "D", "E", "F"];
+
+    const items = codes.map((code) => {
+      const meta = BOAS_PRATICAS_CATALOG[code];
+      let applicableCount = 0;
+      let fulfilledCount = 0;
+      summaries.forEach((s) => {
+        const it = s.items.find((i) => i.code === code);
+        if (it && it.applicable) {
+          applicableCount++;
+          if (it.fulfilled) fulfilledCount++;
+        }
+      });
+      const pendingCount = Math.max(0, applicableCount - fulfilledCount);
+      const pct = applicableCount > 0 ? Math.round((fulfilledCount / applicableCount) * 100) : 0;
+
+      return {
+        code,
+        shortTitle: meta.shortTitle,
+        description: meta.description,
+        applicableCount,
+        fulfilledCount,
+        pendingCount,
+        pct,
+      };
+    });
+
+    return {
+      totalHasDm,
+      avgCompleted,
+      avgTotal,
+      avgRate,
+      attentionCounts,
+      items,
+    };
+  })();
 
   // Handler de Geração do Relatório Gerencial em PDF
   const handleGeneratePDF = () => {
@@ -573,6 +642,95 @@ export default function DashboardPage() {
             Distribuição por Fator / Condição
           </h2>
           <BarChartSVG data={conditionsData} />
+        </div>
+      </div>
+
+      {/* Seção: Boas Práticas — Indicadores de Diabetes e Hipertensão (Grau de Atenção do ACS) */}
+      <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-2xs dark:border-zinc-800 dark:bg-zinc-900 space-y-4">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-zinc-100 pb-4 dark:border-zinc-800">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300">
+              <Users className="h-5 w-5" />
+            </div>
+            <div>
+              <h2 className="text-base font-extrabold text-blue-800 dark:text-blue-300 tracking-tight">
+                Boas Práticas — Indicadores de Diabetes e Hipertensão
+              </h2>
+              <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                Parâmetros que medem o grau de atenção que o ACS deve ter com pacientes com HAS e/ou DM.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="rounded-lg border border-zinc-200 bg-zinc-50 px-2.5 py-1 font-bold text-zinc-800 dark:border-zinc-800 dark:bg-zinc-800 dark:text-zinc-200">
+              HAS/DM: {boasPraticasOverview.totalHasDm} paciente(s)
+            </span>
+            <span className="rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1 font-bold text-blue-800 dark:border-blue-900 dark:bg-blue-950/50 dark:text-blue-300">
+              Média: {boasPraticasOverview.avgCompleted} de {boasPraticasOverview.avgTotal} em dia ({boasPraticasOverview.avgRate}%)
+            </span>
+            <span className="rounded-lg bg-red-100 px-2 py-1 text-[11px] font-bold text-red-800 dark:bg-red-950 dark:text-red-300">
+              Atenção Alta: {boasPraticasOverview.attentionCounts.Alta}
+            </span>
+            <span className="rounded-lg bg-amber-100 px-2 py-1 text-[11px] font-bold text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+              Moderada: {boasPraticasOverview.attentionCounts["Média"]}
+            </span>
+            <span className="rounded-lg bg-emerald-100 px-2 py-1 text-[11px] font-bold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
+              Em dia: {boasPraticasOverview.attentionCounts.Acompanhado}
+            </span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          {boasPraticasOverview.items.map((item) => (
+            <div
+              key={item.code}
+              onClick={() => router.push(`/busca-ativa?bp=${item.code}`)}
+              className="flex flex-col justify-between rounded-xl border border-zinc-200 bg-zinc-50/50 p-4 hover:border-blue-400 hover:bg-blue-50/20 dark:border-zinc-800 dark:bg-zinc-800/30 dark:hover:border-blue-700 transition-all cursor-pointer"
+              title={`Clique para visualizar pacientes com pendência na Boa Prática ${item.code}`}
+            >
+              <div className="flex items-start gap-3">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-sm font-extrabold text-white shadow-2xs">
+                  {item.code}
+                </span>
+                <p className="text-xs font-semibold leading-relaxed text-zinc-800 dark:text-zinc-200">
+                  {item.description}
+                </p>
+              </div>
+
+              <div className="mt-3 pt-2.5 border-t border-zinc-200/80 dark:border-zinc-700/70 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-1.5 font-semibold text-zinc-500 dark:text-zinc-400">
+                    <Clock className="h-3.5 w-3.5 text-zinc-400" />
+                    <span>{item.shortTitle}</span>
+                  </div>
+
+                  {boasPraticasOverview.totalHasDm > 0 ? (
+                    <div className="flex items-center gap-2 text-[11px] font-bold">
+                      <span className="text-emerald-600 dark:text-emerald-400">
+                        {item.fulfilledCount} em dia
+                      </span>
+                      <span className="text-zinc-300 dark:text-zinc-600">•</span>
+                      <span className="text-red-600 dark:text-red-400">
+                        {item.pendingCount} pendente(s) ({item.pct}%)
+                      </span>
+                    </div>
+                  ) : (
+                    <span className="text-[11px] text-zinc-400">Sem pacientes HAS/DM no filtro</span>
+                  )}
+                </div>
+
+                {boasPraticasOverview.totalHasDm > 0 && (
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
+                    <div
+                      className="h-full rounded-full bg-blue-600 transition-all duration-300"
+                      style={{ width: `${item.pct}%` }}
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 

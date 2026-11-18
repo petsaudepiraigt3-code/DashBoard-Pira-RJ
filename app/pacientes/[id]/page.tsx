@@ -28,6 +28,9 @@ import { compareActionsChronological } from "@/lib/utils/returns";
 import { PriorityExplanationCard } from "@/components/patients/priority-explanation-card";
 import { PatientEvolutionHistory } from "@/components/patients/patient-evolution-history";
 import { ManagerObservationsSection } from "@/components/patients/manager-observations-section";
+import { BoasPraticasCard } from "@/components/patients/boas-praticas-card";
+import { DcntParameters } from "@/types/dcnt";
+import { DEFAULT_DCNT_PARAMETERS, getDcntParametersFromStore } from "@/lib/store/parameters";
 import {
   User,
   Phone,
@@ -57,17 +60,22 @@ export default function PacienteDetalhePage({
   const [realSnapshots, setRealSnapshots] = useState<PatientCargaSnapshot[]>([]);
   const [realManagerObs, setRealManagerObs] = useState<ManagerObservationRecord[]>([]);
   const [realManagerHist, setRealManagerHist] = useState<ManagerObservationRevision[]>([]);
+  const [dcntParams, setDcntParams] = useState<DcntParameters>(DEFAULT_DCNT_PARAMETERS);
 
   useEffect(() => {
     async function loadData() {
       if (!resolvedParams.id) return;
-      const singlePat = await getPatientByIdFromStore(resolvedParams.id, {
-        role,
-        userUnitId,
-        assignedMicroareaCodes: userProfile?.assignedMicroareaCodes,
-        acsName: userProfile?.name,
-        acsId: userProfile?.uid,
-      });
+      const [singlePat, loadedParams] = await Promise.all([
+        getPatientByIdFromStore(resolvedParams.id, {
+          role,
+          userUnitId,
+          assignedMicroareaCodes: userProfile?.assignedMicroareaCodes,
+          acsName: userProfile?.name,
+          acsId: userProfile?.uid,
+        }),
+        getDcntParametersFromStore().catch(() => DEFAULT_DCNT_PARAMETERS),
+      ]);
+      setDcntParams(loadedParams);
       if (singlePat) {
         setPatients([singlePat]);
       } else {
@@ -162,9 +170,21 @@ export default function PacienteDetalhePage({
     if (role !== "ADMIN" && role !== "GERENTE") return;
     const nextVal = !patient[field];
     try {
-      await updatePatientConditionsInStore(patient.id, { [field]: nextVal });
+      const updatedInfo = await updatePatientConditionsInStore(patient.id, { [field]: nextVal });
       setPatients((prev) =>
-        prev.map((p) => (p.id === patient.id ? { ...p, [field]: nextVal } : p))
+        prev.map((p) =>
+          p.id === patient.id
+            ? {
+                ...p,
+                [field]: nextVal,
+                ...(updatedInfo?.priority ? { priority: updatedInfo.priority } : {}),
+                ...(updatedInfo?.activeSearchReason !== undefined
+                  ? { activeSearchReason: updatedInfo.activeSearchReason }
+                  : {}),
+                ...(updatedInfo?.boasPraticas ? { boasPraticas: updatedInfo.boasPraticas } : {}),
+              }
+            : p
+        )
       );
     } catch (e) {
       // Ignorar erro silenciosamente
@@ -456,6 +476,20 @@ export default function PacienteDetalhePage({
         />
       </div>
 
+      {/* Boas Práticas de Diabetes e Hipertensão (Grau de Atenção do ACS) */}
+      <BoasPraticasCard
+        patient={patient}
+        allActions={allActions}
+        params={dcntParams}
+        userRole={role}
+        userName={userProfile?.name}
+        onPatientUpdated={(patch) => {
+          setPatients((prev) =>
+            prev.map((p) => (p.id === patient.id ? { ...p, ...patch } : p))
+          );
+        }}
+      />
+
       {/* Seção de Observações da Gerência da Unidade (Editável pelo Gerente, Histórico Visível ao ACS) */}
       <ManagerObservationsSection
         patient={patient}
@@ -486,7 +520,7 @@ export default function PacienteDetalhePage({
       />
 
       {/* Seção de Motivos da Sinalização (Explicabilidade da Prioridade) */}
-      <PriorityExplanationCard patient={patient} allActions={allActions} />
+      <PriorityExplanationCard patient={patient} allActions={allActions} params={dcntParams} />
 
       {/* Histórico e Evolução das Cargas de Dados e-SUS APS */}
       <PatientEvolutionHistory patient={patient} snapshots={allSnapshots} />

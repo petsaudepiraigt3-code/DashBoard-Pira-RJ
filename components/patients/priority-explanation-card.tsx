@@ -1,8 +1,9 @@
 "use client";
 
 import React from "react";
-import { Patient, PatientActionRecord } from "@/types/dcnt";
+import { DcntParameters, Patient, PatientActionRecord } from "@/types/dcnt";
 import { getPriorityExplanation, PriorityExplanation } from "@/lib/utils/priority";
+import { DEFAULT_DCNT_PARAMETERS } from "@/lib/store/parameters";
 import {
   AlertCircle,
   AlertTriangle,
@@ -16,13 +17,15 @@ import {
 interface PriorityExplanationCardProps {
   patient: Patient;
   allActions?: PatientActionRecord[];
+  params?: DcntParameters;
 }
 
 export function PriorityExplanationCard({
   patient,
   allActions,
+  params = DEFAULT_DCNT_PARAMETERS,
 }: PriorityExplanationCardProps) {
-  const explanation: PriorityExplanation = getPriorityExplanation(patient, allActions);
+  const explanation: PriorityExplanation = getPriorityExplanation(patient, allActions, params);
 
   // Configurações visuais por nível de prioridade (Acessibilidade e Contraste)
   const stylesByPriority = {
